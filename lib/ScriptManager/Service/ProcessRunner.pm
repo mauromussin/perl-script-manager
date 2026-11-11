@@ -16,7 +16,7 @@ sub run ($self, $name, $args = [], %o) {
         // ScriptManager::Exception->throw('process_not_allowed', "Programma non ammesso: $name");
     ScriptManager::Exception->throw('process_not_found', "Programma non eseguibile: $name") unless -x $exe;
     ScriptManager::Exception->throw('process_bad_args', 'Argomenti non validi')
-        if grep { !defined || ref } @$args;
+        if grep { !defined($_) || ref($_) } @$args;
 
     my $timeout = $o{timeout} // $self->default_timeout;
     my %env     = %{$o{env} // {}};

@@ -2,6 +2,7 @@ package ScriptManager::Service::ProcedureRegistry;
 use Mojo::Base -base, -signatures;
 
 use Mojo::Loader 'load_class';
+use Mojo::JSON 'false';
 use ScriptManager::Exception;
 use ScriptManager::Validation::Parameters;
 use YAML::PP;
@@ -15,7 +16,7 @@ sub load ($self) {
     for my $p (@{$doc->{procedures} // []}) {
         $self->_check($p);
         $p->{parameter_schema}{type}                 //= 'object';
-        $p->{parameter_schema}{additionalProperties} //= \0;
+        $p->{parameter_schema}{additionalProperties} //= false;
         $p->{enabled}     = (exists $p->{enabled} ? $p->{enabled} : 1) ? 1 : 0;
         $p->{description} //= '';
         die "Procedura duplicata: $p->{code}\n" if $by_code{$p->{code}};

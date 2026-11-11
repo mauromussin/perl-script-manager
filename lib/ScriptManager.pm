@@ -46,7 +46,8 @@ sub startup ($self) {
     my $pg  = Mojo::Pg->new($url);
     $pg->search_path([$config->{database}{schema}]) if $config->{database}{schema};
 
-    $self->plugin(Minion => {Pg => $pg});
+    $self->plugin(Minion => {Pg => $url});
+    $self->minion->backend->pg->search_path([$config->{database}{schema}]) if $config->{database}{schema};
 
     my $output_root = $self->_dir($config->{paths}{output_dir})->make_path;
     my $registry    = ScriptManager::Service::ProcedureRegistry->new(file => $self->_dir($config->{paths}{procedures_file}))->load;

@@ -9,6 +9,8 @@ RUN apt-get update \
     && rm -rf /root/.cpanm
 
 ENV PERL_CARTON_PATH=/opt/perl-local \
+    PERL5LIB=/opt/perl-local/lib/perl5 \
+    PATH=/opt/perl-local/bin:$PATH \
     MOJO_HOME=/app
 
 RUN groupadd --gid 1000 app \
@@ -37,4 +39,4 @@ COPY --chown=app:app templates ./templates
 RUN mkdir -p var/input var/output var/logs
 ENV MOJO_MODE=production
 EXPOSE 3000
-CMD ["carton", "exec", "perl", "bin/app", "daemon", "-l", "http://*:3000"]
+CMD ["perl", "bin/app", "daemon", "-l", "http://*:3000"]

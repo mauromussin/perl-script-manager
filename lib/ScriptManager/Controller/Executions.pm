@@ -84,7 +84,7 @@ sub download ($c) {
     return $c->reply->not_found unless -f $file;
 
     my ($real_base, $real_file) = ($base->realpath, $file->realpath);
-    return $c->reply->not_found unless index("$real_file", "$real_base/") == 0;
+    return $c->reply->not_found unless CORE::index("$real_file", "$real_base/") == 0;
 
     my $name = $art->{stored_name} =~ s/[^A-Za-z0-9._-]/_/gr;
     my $h    = $c->res->headers;

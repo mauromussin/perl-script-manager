@@ -39,9 +39,9 @@ I test di integrazione richiedono `TEST_ONLINE` (impostata dal servizio `test`);
 ## CLI
 
 ```bash
-docker compose exec app carton exec perl bin/procedure list
-docker compose exec app carton exec perl bin/procedure run example_echo --message ciao --repeat 3 --wait
-docker compose exec app carton exec perl bin/procedure status <id-esecuzione>
+docker compose exec app perl bin/procedure list
+docker compose exec app perl bin/procedure run example_echo --message ciao --repeat 3 --wait
+docker compose exec app perl bin/procedure status <id-esecuzione>
 ```
 
 ## Struttura

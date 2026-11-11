@@ -34,13 +34,13 @@ services:
 
   app:
     <<: *app
-    command: carton exec morbo -l http://*:3000 -w lib -w templates -w config bin/app
+    command: morbo -l http://*:3000 -w lib -w templates -w config bin/app
     ports:
       - "127.0.0.1:3000:3000"
 
   worker:
     <<: *app
-    command: carton exec perl bin/worker
+    command: perl bin/worker
 
   test:
     <<: *app
@@ -48,7 +48,7 @@ services:
     environment:
       <<: *app-env
       TEST_ONLINE: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@database:5432/${POSTGRES_DB}
-    command: carton exec prove -lr t
+    command: prove -lr t
 
 volumes:
   pgdata:

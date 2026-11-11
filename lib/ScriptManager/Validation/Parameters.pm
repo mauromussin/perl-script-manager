@@ -1,8 +1,8 @@
 package ScriptManager::Validation::Parameters;
 use Mojo::Base -base, -signatures;
 
-use JSON::Validator;
-use Mojo::JSON qw(false true);
+use JSON::Validator::Schema::Draft7;
+use Mojo::JSON qw(decode_json encode_json false true);
 
 # JSON Schema (object) describing the procedure parameters
 has 'schema';
@@ -64,10 +64,10 @@ sub from_args ($self, $args) {
 
 # Returns ($coerced_data, \@errors); errors are hashes with path and message.
 sub validate ($self, $data) {
-    my $validator = JSON::Validator->new->coerce('booleans,numbers,defaults');
-    $validator->schema($self->schema);
+    my $schema = JSON::Validator::Schema::Draft7->new(decode_json(encode_json($self->schema)));
+    $schema->coerce('booleans,numbers,defaults');
     my %copy   = %{$data // {}};
-    my @errors = $validator->validate(\%copy);
+    my @errors = $schema->validate(\%copy);
     return (\%copy, [map { {path => $_->path, message => $_->message} } @errors]);
 }
 

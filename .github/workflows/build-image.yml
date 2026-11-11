@@ -75,7 +75,7 @@ jobs:
           docker run --rm --network sm-test \
             -e TEST_ONLINE=postgresql://test:test@sm-db:5432/test \
             -v "$PWD":/app perl-script-manager-dev:ci \
-            carton exec prove -lr t
+            prove -lr t
 
       - name: Push dev image
         uses: docker/build-push-action@v6

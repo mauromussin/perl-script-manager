@@ -23,7 +23,7 @@
     {
       "label": "Perl::Critic",
       "type": "shell",
-      "command": "docker compose run --rm app carton exec perlcritic --profile .perlcriticrc lib bin",
+      "command": "docker compose run --rm app perlcritic --profile .perlcriticrc lib bin",
       "problemMatcher": []
     }
   ]

@@ -1,12 +1,13 @@
 use Mojo::Base -strict;
 use Test::More;
+use Mojo::JSON 'false';
 use Mojo::Parameters;
 use ScriptManager::Validation::Parameters;
 
 my $v = ScriptManager::Validation::Parameters->new(
     schema => {
         type                 => 'object',
-        additionalProperties => \0,
+        additionalProperties => false,
         required             => ['name'],
         properties           => {
             name   => {type => 'string', minLength => 1, 'x-order' => 1},
