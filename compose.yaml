@@ -1,6 +1,8 @@
 name: perl-script-manager
 
 x-app: &app
+  # Set APP_IMAGE in .env to use the image built by GitHub Actions instead of building locally.
+  image: ${APP_IMAGE:-perl-script-manager-dev}
   build:
     context: .
     target: dev

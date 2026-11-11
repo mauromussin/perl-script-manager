@@ -29,5 +29,12 @@ jobs:
         with:
           perl-version: "5.40"
       - run: sudo apt-get update && sudo apt-get install -y libpq-dev
-      - run: cpanm --notest Carton && carton install --deployment
+      - run: cpanm --notest Carton
+      - name: Install dependencies
+        run: |
+          if [ -f cpanfile.snapshot ]; then carton install --deployment; else carton install; fi
       - run: carton exec prove -lr t
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cpanfile.snapshot
+          path: cpanfile.snapshot
