@@ -1,0 +1,9 @@
+.git
+.env
+.env.*
+!.env.example
+local
+var/input/*
+var/output/*
+var/logs/*
+config/application.yml

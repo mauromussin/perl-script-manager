@@ -1,0 +1,15 @@
+# Copiare in config/application.yml (non versionato) per sovrascrivere i valori predefiniti.
+# Segreti e credenziali vanno forniti tramite variabili d'ambiente:
+#   DATABASE_URL, SCRIPT_MANAGER_SECRET
+
+log_level: info
+
+paths:
+  input_dir: var/input
+  output_dir: var/output
+  log_dir: var/logs
+  procedures_file: config/procedures.yml
+
+retention_days: 30
+page_size: 25
+max_process_output_bytes: 1048576

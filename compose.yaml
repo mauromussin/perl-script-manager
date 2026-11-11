@@ -1,0 +1,52 @@
+name: perl-script-manager
+
+x-app: &app
+  build:
+    context: .
+    target: dev
+  environment: &app-env
+    DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@database:5432/${POSTGRES_DB}
+    SCRIPT_MANAGER_SECRET: ${SCRIPT_MANAGER_SECRET:?impostare SCRIPT_MANAGER_SECRET in .env}
+    SCRIPT_MANAGER_WORKER_JOBS: ${SCRIPT_MANAGER_WORKER_JOBS:-2}
+    MOJO_MODE: ${MOJO_MODE:-development}
+  volumes:
+    - .:/app
+  depends_on:
+    database:
+      condition: service_healthy
+
+services:
+  database:
+    image: postgres:16-bookworm
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?impostare POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?impostare POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:?impostare POSTGRES_DB in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    <<: *app
+    command: carton exec morbo -l http://*:3000 -w lib -w templates -w config bin/app
+    ports:
+      - "127.0.0.1:3000:3000"
+
+  worker:
+    <<: *app
+    command: carton exec perl bin/worker
+
+  test:
+    <<: *app
+    profiles: ["test"]
+    environment:
+      <<: *app-env
+      TEST_ONLINE: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@database:5432/${POSTGRES_DB}
+    command: carton exec prove -lr t
+
+volumes:
+  pgdata:

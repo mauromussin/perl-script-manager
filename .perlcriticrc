@@ -1,0 +1,7 @@
+severity = 4
+verbose = 8
+
+[-Subroutines::ProhibitSubroutinePrototypes]
+[-Subroutines::RequireArgUnpacking]
+[-ValuesAndExpressions::ProhibitNoisyQuotes]
+[-ValuesAndExpressions::ProhibitMagicNumbers]

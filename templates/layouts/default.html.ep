@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  % if (stash 'refresh') {
+  <meta http-equiv="refresh" content="<%= stash 'refresh' %>">
+  % }
+  <title><%= title %> - Script Manager</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <a class="brand" href="<%= url_for 'catalog' %>">Script Manager</a>
+    <nav>
+      <a href="<%= url_for 'catalog' %>">Procedure</a>
+      <a href="<%= url_for 'executions' %>">Storico</a>
+    </nav>
+  </header>
+  <main>
+    <%= content %>
+  </main>
+</body>
+</html>

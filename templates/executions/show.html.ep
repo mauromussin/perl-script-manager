@@ -1,0 +1,65 @@
+% layout 'default';
+% title 'Esecuzione ' . substr($execution->{id}, 0, 8);
+<h1><%= $execution->{procedure_name} %></h1>
+
+<dl class="details">
+  <dt>Identificatore</dt><dd><code><%= $execution->{id} %></code></dd>
+  <dt>Stato</dt><dd><span class="status <%= $execution->{status} %>"><%= $execution->{status} %></span></dd>
+  <dt>Avanzamento</dt>
+  <dd>
+% if (defined $execution->{progress} && $execution->{status} ne 'queued') {
+    <progress max="100" value="<%= $execution->{progress} %>"></progress> <%= $execution->{progress} %>%
+% } else {
+    -
+% }
+    <%= $execution->{current_step} // '' %>
+  </dd>
+  <dt>Richiesta</dt><dd><%= $execution->{requested_at} %> da <%= $execution->{requested_by} %></dd>
+  <dt>Inizio</dt><dd><%= $execution->{started_at} // '-' %></dd>
+  <dt>Fine</dt><dd><%= $execution->{finished_at} // '-' %></dd>
+% if (defined $execution->{summary}) {
+  <dt>Esito</dt><dd><%= $execution->{summary} %></dd>
+% }
+% if (defined $execution->{error_message}) {
+  <dt>Errore</dt><dd class="error"><%= $execution->{error_code} %>: <%= $execution->{error_message} %></dd>
+% }
+  <dt>Parametri</dt>
+  <dd>
+% for my $k (sort keys %{$execution->{parameters}}) {
+    <div><strong><%= $k %></strong>: <%= ref $execution->{parameters}{$k} eq 'ARRAY' ? join(', ', @{$execution->{parameters}{$k}}) : $execution->{parameters}{$k} %></div>
+% }
+  </dd>
+</dl>
+
+<div class="actions">
+% if (!is_final($execution->{status}) && $execution->{status} ne 'cancel_requested') {
+  <form method="post" action="<%= url_for 'execution_cancel', id => $execution->{id} %>">
+    <%= csrf_field %>
+    <button type="submit">Annulla</button>
+  </form>
+% }
+  <a class="button" href="<%= url_for('procedure', code => $execution->{procedure_code})->query(from => $execution->{id}) %>">Riesegui</a>
+</div>
+
+<h2>File prodotti</h2>
+% if (!@$artifacts) {
+<p>Nessun file.</p>
+% } else {
+<ul>
+%   for my $a (@$artifacts) {
+  <li><a href="<%= url_for 'artifact', id => $execution->{id}, artifact_id => $a->{id} %>"><%= $a->{original_name} %></a>
+    (<%= $a->{size_bytes} %> byte, sha256 <code><%= substr $a->{sha256}, 0, 12 %></code>)</li>
+%   }
+</ul>
+% }
+
+<h2>Log</h2>
+<table class="log">
+  <tbody>
+% for my $ev (@$events) {
+    <tr class="<%= $ev->{level} %>">
+      <td><%= $ev->{created_at} %></td><td><%= $ev->{level} %></td><td><%= $ev->{message} %></td>
+    </tr>
+% }
+  </tbody>
+</table>

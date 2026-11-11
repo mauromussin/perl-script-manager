@@ -1,0 +1,66 @@
+% layout 'default';
+% title $procedure->{name};
+% my $props = $procedure->{parameter_schema}{properties} // {};
+% my %required = map { $_ => 1 } @{$procedure->{parameter_schema}{required} // []};
+% my %error_for;
+% push @{$error_for{$_->{path}}}, $_->{message} for @$errors;
+<h1><%= $procedure->{name} %></h1>
+<p><%= $procedure->{description} %></p>
+
+% if (@$errors) {
+<div class="alert" role="alert">
+  <strong>Parametri non validi:</strong>
+  <ul>
+% for my $e (@$errors) {
+    <li><%= $e->{path} %>: <%= $e->{message} %></li>
+% }
+  </ul>
+</div>
+% }
+
+<form method="post" action="<%= url_for 'procedure_run', code => $procedure->{code} %>">
+  <%= csrf_field %>
+% for my $name (@{$validator->properties}) {
+%   my $p     = $props->{$name};
+%   my $type  = $p->{type} // 'string';
+%   my $label = $p->{title} // $name;
+%   my $value = exists $values->{$name} ? $values->{$name} : $p->{default};
+%   my $req   = $required{$name} ? 1 : 0;
+  <div class="field">
+% if ($type eq 'boolean') {
+    <label><input type="checkbox" name="<%= $name %>" value="1"<%= $value ? ' checked' : '' %>> <%= $label %></label>
+% } elsif ($type eq 'array') {
+    <label for="f_<%= $name %>"><%= $label %></label>
+    <select id="f_<%= $name %>" name="<%= $name %>" multiple>
+%   my %selected = map { $_ => 1 } @{ref $value eq 'ARRAY' ? $value : []};
+%   for my $opt (@{$p->{items}{enum} // []}) {
+      <option value="<%= $opt %>"<%= $selected{$opt} ? ' selected' : '' %>><%= $opt %></option>
+%   }
+    </select>
+% } elsif ($p->{enum}) {
+    <label for="f_<%= $name %>"><%= $label %></label>
+    <select id="f_<%= $name %>" name="<%= $name %>"<%= $req ? ' required' : '' %>>
+%   for my $opt (@{$p->{enum}}) {
+      <option value="<%= $opt %>"<%= (defined $value && $value eq $opt) ? ' selected' : '' %>><%= $opt %></option>
+%   }
+    </select>
+% } else {
+%   my $input_type = $type eq 'integer' || $type eq 'number' ? 'number'
+%     : ($p->{format} // '') eq 'date' ? 'date'
+%     : ($p->{format} // '') eq 'date-time' ? 'datetime-local' : 'text';
+%   $value =~ s/:00Z\z// if defined $value && $input_type eq 'datetime-local';
+    <label for="f_<%= $name %>"><%= $label %><%= $req ? ' *' : '' %></label>
+    <input id="f_<%= $name %>" type="<%= $input_type %>" name="<%= $name %>" value="<%= $value // '' %>"
+      <%= $req ? 'required' : '' %>
+      <%= $type eq 'integer' ? 'step=1' : $type eq 'number' ? 'step=any' : '' %>
+      <%= defined $p->{minimum} ? 'min=' . $p->{minimum} : '' %>
+      <%= defined $p->{maximum} ? 'max=' . $p->{maximum} : '' %>
+      <%= defined $p->{maxLength} ? 'maxlength=' . $p->{maxLength} : '' %>>
+% }
+% if (my $msgs = $error_for{"/$name"}) {
+    <span class="error"><%= join '; ', @$msgs %></span>
+% }
+  </div>
+% }
+  <button type="submit">Avvia</button>
+</form>

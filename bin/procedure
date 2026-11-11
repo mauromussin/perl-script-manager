@@ -1,0 +1,74 @@
+#!/usr/bin/env perl
+use strict;
+use warnings;
+use FindBin;
+use lib "$FindBin::Bin/../lib";
+use ScriptManager;
+
+my %FINAL = map { $_ => 1 } qw(completed failed cancelled timed_out);
+
+sub usage {
+    return <<'USAGE';
+Uso:
+  procedure list
+  procedure run <codice> [--parametro valore ...] [--wait]
+  procedure status <id-esecuzione>
+  procedure cancel <id-esecuzione>
+USAGE
+}
+
+my ($command, @args) = @ARGV;
+die usage() unless defined $command;
+
+my $app     = ScriptManager->new;
+my $service = $app->execution_service;
+my $repo    = $app->repo;
+my $user    = $ENV{USER} // $ENV{USERNAME} // 'cli';
+
+if ($command eq 'list') {
+    printf "%-24s %-6s %s\n", @{$_}{qw(code execution_mode name)} for @{$app->registry->enabled};
+    exit 0;
+}
+
+if ($command eq 'run') {
+    my $code = shift @args // die usage();
+    my $wait = grep { $_ eq '--wait' } @args;
+    @args = grep { $_ ne '--wait' } @args;
+
+    my $proc = $app->registry->get($code) // do { warn "Procedura non disponibile: $code\n"; exit 2 };
+    my $input = eval { $app->registry->validator($proc)->from_args(\@args) } // do { warn $@; exit 2 };
+    my $result = $service->submit($code, $input, requested_by => $user);
+    if ($result->{errors}) {
+        warn "$_->{path}: $_->{message}\n" for @{$result->{errors}};
+        exit 2;
+    }
+    my $id = $result->{id};
+    print "$id\n";
+    exit 0 unless $wait || $proc->{execution_mode} eq 'sync';
+
+    my $exec;
+    while (1) {
+        $exec = $repo->get_execution($id);
+        last if $FINAL{$exec->{status}};
+        sleep 1;
+    }
+    print "$exec->{status}: " . ($exec->{summary} // $exec->{error_message} // '') . "\n";
+    exit $exec->{status} eq 'completed' ? 0 : 1;
+}
+
+if ($command eq 'status') {
+    my $id   = shift @args // die usage();
+    my $exec = $repo->get_execution($id) // do { warn "Esecuzione non trovata\n"; exit 2 };
+    printf "%s\n", join ' ', map { $_ // '-' } @{$exec}{qw(procedure_code status progress current_step)};
+    printf "  [%s] %s\n", @{$_}{qw(level message)} for @{$repo->list_events($exec->{id})};
+    exit 0;
+}
+
+if ($command eq 'cancel') {
+    my $id = shift @args // die usage();
+    my $status = $service->cancel($id) // do { warn "Esecuzione non annullabile\n"; exit 1 };
+    print "$status\n";
+    exit 0;
+}
+
+die usage();

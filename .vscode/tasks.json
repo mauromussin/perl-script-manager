@@ -1,0 +1,30 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Avvia ambiente",
+      "type": "shell",
+      "command": "docker compose up --build -d",
+      "problemMatcher": []
+    },
+    {
+      "label": "Test",
+      "type": "shell",
+      "command": "docker compose --profile test run --rm test",
+      "group": { "kind": "test", "isDefault": true },
+      "problemMatcher": []
+    },
+    {
+      "label": "Installa dipendenze e aggiorna cpanfile.snapshot",
+      "type": "shell",
+      "command": "docker compose run --rm app carton install",
+      "problemMatcher": []
+    },
+    {
+      "label": "Perl::Critic",
+      "type": "shell",
+      "command": "docker compose run --rm app carton exec perlcritic --profile .perlcriticrc lib bin",
+      "problemMatcher": []
+    }
+  ]
+}

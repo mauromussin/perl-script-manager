@@ -1,0 +1,50 @@
+% layout 'default';
+% title 'Storico';
+<h1>Storico delle esecuzioni</h1>
+
+<form method="get" action="<%= url_for 'executions' %>" class="filters">
+  <select name="procedure">
+    <option value="">Tutte le procedure</option>
+% for my $p (@$procedures) {
+    <option value="<%= $p->{code} %>"<%= ($filters->{procedure} // '') eq $p->{code} ? ' selected' : '' %>><%= $p->{name} %></option>
+% }
+  </select>
+  <select name="status">
+    <option value="">Tutti gli stati</option>
+% for my $s (@$statuses) {
+    <option value="<%= $s %>"<%= ($filters->{status} // '') eq $s ? ' selected' : '' %>><%= $s %></option>
+% }
+  </select>
+  <input type="date" name="from" value="<%= $filters->{from} // '' %>" title="Dal">
+  <input type="date" name="to" value="<%= $filters->{to} // '' %>" title="Al">
+  <input type="text" name="user" value="<%= $filters->{user} // '' %>" placeholder="Utente">
+  <input type="text" name="id" value="<%= $filters->{id} // '' %>" placeholder="Identificatore">
+  <button type="submit">Filtra</button>
+</form>
+
+<table>
+  <thead><tr><th>Richiesta</th><th>Procedura</th><th>Stato</th><th>Utente</th><th>Esecuzione</th></tr></thead>
+  <tbody>
+% for my $e (@$executions) {
+    <tr>
+      <td><%= $e->{requested_at} %></td>
+      <td><%= $e->{procedure_name} %></td>
+      <td><span class="status <%= $e->{status} %>"><%= $e->{status} %></span></td>
+      <td><%= $e->{requested_by} %></td>
+      <td><a href="<%= url_for 'execution', id => $e->{id} %>"><%= substr $e->{id}, 0, 8 %></a></td>
+    </tr>
+% }
+% if (!@$executions) {
+    <tr><td colspan="5">Nessuna esecuzione trovata.</td></tr>
+% }
+  </tbody>
+</table>
+
+<p class="pager">
+% if ($page > 1) {
+  <a href="<%= url_for('executions')->query([%$filters, page => $page - 1]) %>">&laquo; Precedente</a>
+% }
+% if ($has_more) {
+  <a href="<%= url_for('executions')->query([%$filters, page => $page + 1]) %>">Successiva &raquo;</a>
+% }
+</p>

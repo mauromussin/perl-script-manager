@@ -1,0 +1,15 @@
+.env
+.env.*
+!.env.example
+config/application.yml
+var/input/*
+var/output/*
+var/logs/*
+!var/input/.gitkeep
+!var/output/.gitkeep
+!var/logs/.gitkeep
+local/
+.carton/
+*.bak
+*.tdy
+*.ERR

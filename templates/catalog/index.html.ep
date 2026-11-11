@@ -1,0 +1,16 @@
+% layout 'default';
+% title 'Catalogo';
+<h1>Catalogo delle procedure</h1>
+% if (!@$procedures) {
+<p>Nessuna procedura abilitata.</p>
+% }
+<ul class="cards">
+% for my $p (@$procedures) {
+  <li>
+    <h2><a href="<%= url_for 'procedure', code => $p->{code} %>"><%= $p->{name} %></a></h2>
+    <p><%= $p->{description} %></p>
+    <small><%= $p->{execution_mode} eq 'async' ? 'Esecuzione in background' : 'Esecuzione immediata' %>,
+      timeout <%= $p->{timeout_seconds} %> s</small>
+  </li>
+% }
+</ul>

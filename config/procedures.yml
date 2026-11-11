@@ -1,0 +1,50 @@
+# Catalogo delle procedure ammesse. Solo le procedure elencate qui sono eseguibili.
+# handler_class deve trovarsi sotto ScriptManager::Command::.
+# Parametri con "x-sensitive: true" non vengono salvati e richiedono execution_mode: sync.
+procedures:
+  - code: example_echo
+    name: Esempio - eco con file di output
+    description: >-
+      Procedura dimostrativa: ripete un messaggio, ne mostra l'avanzamento
+      e produce facoltativamente un file di testo scaricabile.
+    enabled: true
+    handler_class: ScriptManager::Command::Example
+    execution_mode: async
+    timeout_seconds: 60
+    exclusive: false
+    retention_days: 7
+    parameter_schema:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string
+          title: Messaggio
+          minLength: 1
+          maxLength: 200
+          x-order: 1
+        repeat:
+          type: integer
+          title: Ripetizioni
+          minimum: 1
+          maximum: 10
+          default: 3
+          x-order: 2
+        delay_seconds:
+          type: number
+          title: Pausa tra i passaggi (secondi)
+          minimum: 0
+          maximum: 5
+          default: 0.5
+          x-order: 3
+        case:
+          type: string
+          title: Maiuscole/minuscole
+          enum: [unchanged, upper, lower]
+          default: unchanged
+          x-order: 4
+        write_file:
+          type: boolean
+          title: Produci file di output
+          default: true
+          x-order: 5

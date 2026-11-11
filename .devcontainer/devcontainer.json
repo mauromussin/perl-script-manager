@@ -1,0 +1,29 @@
+{
+  "name": "perl-script-manager",
+  "dockerComposeFile": ["../compose.yaml"],
+  "service": "app",
+  "runServices": ["app", "worker", "database"],
+  "workspaceFolder": "/app",
+  "remoteUser": "app",
+  "shutdownAction": "stopCompose",
+  "postCreateCommand": "carton install",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "bscan.perlnavigator",
+        "EditorConfig.EditorConfig",
+        "github.copilot",
+        "github.copilot-chat",
+        "ms-azuretools.vscode-docker"
+      ],
+      "settings": {
+        "terminal.integrated.defaultProfile.linux": "bash",
+        "perlnavigator.perlPath": "/usr/local/bin/perl",
+        "perlnavigator.perlcriticProfile": "/app/.perlcriticrc",
+        "perlnavigator.perltidyProfile": "/app/.perltidyrc",
+        "perlnavigator.includePaths": ["/app/lib", "/opt/perl-local/lib/perl5"],
+        "editor.formatOnSave": false
+      }
+    }
+  }
+}

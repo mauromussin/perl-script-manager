@@ -1,0 +1,66 @@
+procedures:
+  - code: test_sum
+    name: Somma di prova
+    handler_class: ScriptManager::Command::TestHandler
+    execution_mode: sync
+    timeout_seconds: 10
+    parameter_schema:
+      type: object
+      required: [a, b]
+      properties:
+        a: {type: integer, minimum: 0, maximum: 1000}
+        b: {type: integer, minimum: 0, maximum: 1000}
+  - code: test_fail
+    name: Fallimento di prova
+    handler_class: ScriptManager::Command::TestHandler
+    execution_mode: sync
+    timeout_seconds: 10
+    parameter_schema:
+      properties:
+        mode: {type: string, enum: [fail], default: fail}
+  - code: test_die
+    name: Eccezione di prova
+    handler_class: ScriptManager::Command::TestHandler
+    execution_mode: sync
+    timeout_seconds: 10
+    parameter_schema:
+      properties:
+        mode: {type: string, enum: [die], default: die}
+  - code: test_slow
+    name: Timeout di prova
+    handler_class: ScriptManager::Command::TestHandler
+    execution_mode: sync
+    timeout_seconds: 1
+    parameter_schema:
+      properties:
+        mode: {type: string, enum: [slow], default: slow}
+  - code: test_secret
+    name: Parametro sensibile di prova
+    handler_class: ScriptManager::Command::TestHandler
+    execution_mode: sync
+    timeout_seconds: 10
+    parameter_schema:
+      required: [token]
+      properties:
+        mode: {type: string, enum: [secret], default: secret}
+        token: {type: string, minLength: 1, x-sensitive: true}
+  - code: test_async
+    name: Esempio asincrono
+    handler_class: ScriptManager::Command::Example
+    execution_mode: async
+    timeout_seconds: 30
+    exclusive: true
+    parameter_schema:
+      required: [message]
+      properties:
+        message: {type: string, minLength: 1, maxLength: 50}
+        repeat: {type: integer, minimum: 1, maximum: 5, default: 2}
+        delay_seconds: {type: number, minimum: 0, maximum: 1, default: 0}
+        write_file: {type: boolean, default: true}
+  - code: test_disabled
+    name: Disabilitata
+    enabled: false
+    handler_class: ScriptManager::Command::TestHandler
+    execution_mode: sync
+    timeout_seconds: 10
+    parameter_schema: {}

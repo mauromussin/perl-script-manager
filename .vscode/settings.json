@@ -1,0 +1,10 @@
+{
+  "files.eol": "\n",
+  "files.associations": {
+    "*.html.ep": "html",
+    "cpanfile": "perl"
+  },
+  "[perl]": {
+    "editor.tabSize": 4
+  }
+}
