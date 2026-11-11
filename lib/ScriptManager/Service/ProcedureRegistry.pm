@@ -16,7 +16,8 @@ sub load ($self) {
         $self->_check($p);
         $p->{parameter_schema}{type}                 //= 'object';
         $p->{parameter_schema}{additionalProperties} //= \0;
-        $p->{enabled} = $p->{enabled} ? 1 : 0;
+        $p->{enabled}     = (exists $p->{enabled} ? $p->{enabled} : 1) ? 1 : 0;
+        $p->{description} //= '';
         die "Procedura duplicata: $p->{code}\n" if $by_code{$p->{code}};
         $by_code{$p->{code}} = $p;
         push @list, $p;

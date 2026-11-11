@@ -12,6 +12,17 @@ my $registry = ScriptManager::Service::ProcedureRegistry->new(file => $root->chi
 ok $registry->get('example_echo'), 'shipped catalog contains example_echo';
 is $registry->get('nope'), undef, 'unknown procedure';
 
+{
+    my $file = path(tempdir(CLEANUP => 1), 'defaults.yml');
+    $file->spew(<<'YAML');
+procedures:
+  - {code: plain, name: Plain, handler_class: ScriptManager::Command::Example, execution_mode: sync, timeout_seconds: 5}
+YAML
+    my $p = ScriptManager::Service::ProcedureRegistry->new(file => $file)->load->get('plain');
+    ok $p, 'enabled by default';
+    is $p->{description}, '', 'description defaults to empty string';
+}
+
 sub load_yaml ($yaml) {
     my $file = path(tempdir(CLEANUP => 1), 'p.yml');
     $file->spew($yaml);
