@@ -9,6 +9,6 @@ Riferimento completo: `docs/ANALISI_APPLICAZIONE.md` (in particolare la sezione 
 - Nessuna shell con input controllabile dall'utente: usare `ScriptManager::Service::ProcessRunner` con argomenti in lista.
 - Nessun segreto nei file versionati. SQL solo con placeholder.
 - Nuove dipendenze solo se aggiunte a `cpanfile` e documentate.
-- Ogni modifica include test (`t/`). Verificare con `docker compose --profile test run --rm test`.
+- Ogni modifica include test (`t/`) quando applicabile. La suite completa si esegue localmente con `docker compose --profile test run --rm test`; GitHub Actions verifica solo configurazione Compose, build dell'immagine production e sintassi Perl.
 - Distinguere comportamento verificato, dedotto e proposto; segnalare le assunzioni.
 - Modifiche piccole, verificabili e reversibili.

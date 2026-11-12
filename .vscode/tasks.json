@@ -17,13 +17,13 @@
     {
       "label": "Installa dipendenze e aggiorna cpanfile.snapshot",
       "type": "shell",
-      "command": "docker compose run --rm app carton install",
+      "command": "docker compose run --no-deps --rm app carton install",
       "problemMatcher": []
     },
     {
       "label": "Perl::Critic",
       "type": "shell",
-      "command": "docker compose run --rm app perlcritic --profile .perlcriticrc lib bin",
+      "command": "docker compose run --no-deps --rm app perlcritic --profile .perlcriticrc lib bin",
       "problemMatcher": []
     }
   ]

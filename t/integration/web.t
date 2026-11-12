@@ -37,7 +37,8 @@ subtest 'start and follow an execution' => sub {
     $location = $t->tx->res->headers->location;
     $t->get_ok($location)->status_is(200)->content_like(qr/completed/)->content_like(qr/sum=3/);
     $t->get_ok('/executions')->status_is(200)->content_like(qr/Somma di prova/);
-    $t->get_ok('/executions?status=failed')->status_is(200)->content_unlike(qr/Somma di prova/);
+    $t->get_ok('/executions?status=failed')->status_is(200)
+        ->text_is('tbody tr td', 'Nessuna esecuzione trovata.');
 };
 
 subtest 're-run prefills the form with a new record' => sub {

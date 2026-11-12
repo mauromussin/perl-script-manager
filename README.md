@@ -1,40 +1,53 @@
 # Perl Script Manager
 
-Applicazione web (Mojolicious + Minion + PostgreSQL) per l'esecuzione guidata di procedure Perl.
+Applicazione web (Mojolicious + Minion + PostGIS) per l'esecuzione guidata di procedure Perl.
 Specifica completa: [docs/ANALISI_APPLICAZIONE.md](docs/ANALISI_APPLICAZIONE.md).
 
 ## Avvio
 
 ```bash
-cp .env.example .env          # sostituire password e segreto
-docker compose run --rm app carton install   # genera cpanfile.snapshot (da versionare)
-docker compose up --build     # app su http://127.0.0.1:3000, worker e database
+cp .env.example .env          # impostare credenziali e segreto locali
+docker compose up --build -d  # app su http://127.0.0.1:3000
 ```
 
-Le credenziali del database nell'URL devono essere codificate (percent-encoding) se contengono caratteri speciali.
+Compose avvia l'immagine applicativa `production`, il worker e `postgis/postgis:16-3.4`.
+Il servizio PostGIS usa `pull_policy: never`: l'immagine deve essere già disponibile
+localmente e Compose non la scarica. Il database e i dati in `var/` sono conservati in
+volumi Docker; il codice non viene montato nell'immagine di produzione.
+
+`APP_POSTGRES_USER`, `APP_POSTGRES_PASSWORD`, `APP_POSTGRES_DB` e `SCRIPT_MANAGER_SECRET`
+sono configurazioni locali obbligatorie. La porta database è pubblicata solo su
+`127.0.0.1:5433`; l'app è disponibile su `127.0.0.1:3000`.
+La password deve essere compatibile con una URL PostgreSQL oppure percent-encoded.
+
+```bash
+docker compose logs -f app worker
+docker compose down
+```
 
 ## Immagine costruita da GitHub Actions
 
-Il workflow `build-image` (push su `main`) costruisce l'immagine, esegue i test, e la pubblica su GitHub Container Registry
-(`ghcr.io/<owner>/<repo>-dev`; l'immagine `production` solo se `cpanfile.snapshot` è versionato).
-Il `cpanfile.snapshot` generato è scaricabile dagli artifact del workflow: va copiato nella radice e committato.
+GitHub Actions controlla la configurazione Compose, costruisce il target `production` e
+verifica la sintassi Perl contenuta nell'immagine. Non avvia database e non esegue `prove`.
+Su push a `main` o a un tag `v*`, pubblica l'immagine runtime su
+`ghcr.io/<owner>/<repo>` con tag `latest` (per `main`), il tag Git e `sha-<commit>`.
 
 Per usare l'immagine invece di costruirla in locale:
 
 ```bash
 docker login ghcr.io          # utente GitHub + Personal Access Token con scope read:packages
-# in .env: APP_IMAGE=ghcr.io/<owner>/<repo>-dev:latest
-docker compose pull
-docker compose up --no-build
+# in .env: APP_IMAGE=ghcr.io/<owner>/<repo>:latest
+docker compose up -d --no-build
 ```
 
-## Test
+## Test locali
 
 ```bash
 docker compose --profile test run --rm test
 ```
 
-I test di integrazione richiedono `TEST_ONLINE` (impostata dal servizio `test`); senza di essa vengono saltati.
+Il profilo locale `test` usa l'immagine di sviluppo e il servizio PostGIS già configurato.
+La suite non fa parte delle verifiche GitHub Actions.
 
 ## CLI
 

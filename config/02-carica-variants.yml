@@ -1,0 +1,131 @@
+loader_profiles:
+  execution_ready: false
+  execution_note: >-
+    Registro descrittivo basato sull'analisi statica. Non è caricato dal catalogo
+    procedures.yml e non abilita l'esecuzione degli script legacy.
+  base_profile: lin_2026
+  common:
+    input:
+      accepted_file_suffixes: [OUT, out]
+      track_header_length_chars: 34
+      sample_offset_chars: 34
+      sample_length_chars: 24
+    coordinates:
+      system_comment: GAUSBOAGA
+      raw_position_divisor: 64
+      meters_per_nautical_mile: 1852.2
+    altitude:
+      input_unit: hundreds_of_feet
+      meters_per_input_unit: 30.48
+    time:
+      input_timezone: UTC
+      output_timezone: process_localtime
+      clamp_second_60_to_59: true
+    midnight_track_merge: true
+  profiles:
+    lin_2017:
+      source: "02-carica_DB_2.0 (LIN dal 25102017).pl"
+      site_label: LIN
+      coordinate_origin_m: {x: 1521961.05, y: 5034234.14}
+      tables: [flay, battute, battute_doppie]
+      duplicate_tracks:
+        strategy: separate_table
+        table: battute_doppie
+        continue_main_battute_after_duplicate: false
+      duplicate_load_strategy: sequential
+    lin_2024:
+      source: "02-carica_DB_2.0 (LIN dal 2024).pl"
+      site_label: LIN
+      coordinate_origin_m: {x: 1522032.947, y: 5034120.016}
+      coordinate_revision_note: "2024-02-05; intestazione: coordinate di test"
+      tables: [flay, battute, battute_doppie]
+      duplicate_tracks:
+        strategy: separate_table
+        table: battute_doppie
+        continue_main_battute_after_duplicate: false
+      duplicate_load_strategy: sequential
+    lin_2025:
+      source: "02-carica_DB_2.0 (LIN dal 2025).PL"
+      site_label: LIN
+      coordinate_origin_m: {x: 1521935.012, y: 5034308.734}
+      coordinate_revision_note: "Offset distinti da LIN 2024; nessuna revisione 2025 esplicita nell'intestazione"
+      tables: [flay, battute, battute_doppie]
+      duplicate_tracks:
+        strategy: separate_table
+        table: battute_doppie
+        continue_main_battute_after_duplicate: false
+      duplicate_load_strategy: sequential
+    lin_2026:
+      source: "02-carica_DB_2.0 (LIN dal 2026).PL"
+      site_label: LIN
+      coordinate_origin_m: {x: 1521934.03, y: 5034214.34}
+      coordinate_revision_note: "2026-02-02"
+      tables: [flay, battute, battute_doppie]
+      duplicate_tracks:
+        strategy: separate_table
+        table: battute_doppie
+        continue_main_battute_after_duplicate: false
+      duplicate_load_strategy: sequential
+    orio_radar_lin:
+      source: "02-carica_DB_2.0 (ORIO_da_RADAR_LIN).pl"
+      site_label: ORIO
+      radar_source_label: LIN
+      coordinate_origin_m: {x: 1520711.5, y: 5034234.15}
+      tables: [flay, battute]
+      duplicate_tracks:
+        strategy: reuse_existing_track_and_append_to_main_table
+        table: battute
+        continue_main_battute_after_duplicate: true
+      duplicate_load_strategy: not_applicable
+    orio_dbltrk:
+      source: "02-carica_DB_2.0_ORIO_dbltrk.pl"
+      site_label: ORIO
+      coordinate_origin_m: {x: 1555262.5, y: 5057915.15}
+      tables: [flay, battute, battute_doppie]
+      duplicate_tracks:
+        strategy: separate_table
+        table: battute_doppie
+        continue_main_battute_after_duplicate: false
+      duplicate_load_strategy: sequential
+    orio_dbltrk_new_radar:
+      source: "02-carica_DB_2.0_ORIO_dbltrk_new_radar.pl"
+      site_label: ORIO
+      radar_revision_label: new_radar
+      coordinate_origin_m: {x: 1555460, y: 5057920}
+      tables: [flay, battute, battute_doppie]
+      duplicate_tracks:
+        strategy: separate_table
+        table: battute_doppie
+        continue_main_battute_after_duplicate: false
+      duplicate_load_strategy: short_circuit_or_chain
+    mxp_dbltrk_2015:
+      source: "02-carica_DB_2.0MXP_dbltrk_da_06032015.pl"
+      site_label: MXP
+      coordinate_origin_m: {x: 1521977.2, y: 5034034.23}
+      tables: [flay, battute, battute_doppie]
+      duplicate_tracks:
+        strategy: separate_table
+        table: battute_doppie
+        continue_main_battute_after_duplicate: false
+      duplicate_load_strategy: sequential
+    vbs_dbltrk:
+      source: "02-carica_DB_2.0_VBS_dbltrk.pl"
+      site_label: VBS
+      coordinate_origin_m: {x: 1688581.27, y: 5025286.91}
+      tables: [flay, battute, battute_doppie]
+      duplicate_tracks:
+        strategy: separate_table
+        table: battute_doppie
+        continue_main_battute_after_duplicate: false
+      duplicate_load_strategy: sequential
+    vbs_radar_lin_dbltrk:
+      source: "02-carica_DB_2.0_VBS_da_RADAR_LIN_dbltrk.pl"
+      site_label: VBS
+      radar_source_label: LIN
+      coordinate_origin_m: {x: 1521961.5, y: 5034514.15}
+      tables: [flay, battute, battute_doppie]
+      duplicate_tracks:
+        strategy: separate_table
+        table: battute_doppie
+        continue_main_battute_after_duplicate: false
+      duplicate_load_strategy: sequential

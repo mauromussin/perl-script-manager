@@ -1,0 +1,1 @@
+create schema script_manager;

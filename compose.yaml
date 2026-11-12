@@ -1,31 +1,36 @@
 name: perl-script-manager
 
-x-app: &app
-  # Set APP_IMAGE in .env to use the image built by GitHub Actions instead of building locally.
-  image: ${APP_IMAGE:-perl-script-manager-dev}
+x-app-env: &app-env
+  DATABASE_URL: postgresql://${APP_POSTGRES_USER:?impostare APP_POSTGRES_USER in .env}:${APP_POSTGRES_PASSWORD:?impostare APP_POSTGRES_PASSWORD in .env}@database:5432/${APP_POSTGRES_DB:-${POSTGRES_DB}}
+  SCRIPT_MANAGER_DATABASE_SCHEMA: script_manager
+  SCRIPT_MANAGER_SECRET: ${SCRIPT_MANAGER_SECRET:?impostare SCRIPT_MANAGER_SECRET in .env}
+  SCRIPT_MANAGER_WORKER_JOBS: ${SCRIPT_MANAGER_WORKER_JOBS:-2}
+
+x-production-app: &production-app
+  image: ${APP_IMAGE:-perl-script-manager:production}
   build:
     context: .
-    target: dev
-  environment: &app-env
-    DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@database:5432/${POSTGRES_DB}
-    SCRIPT_MANAGER_SECRET: ${SCRIPT_MANAGER_SECRET:?impostare SCRIPT_MANAGER_SECRET in .env}
-    SCRIPT_MANAGER_WORKER_JOBS: ${SCRIPT_MANAGER_WORKER_JOBS:-2}
-    MOJO_MODE: ${MOJO_MODE:-development}
+    target: production
+  environment: *app-env
   volumes:
-    - .:/app
+    - app_data:/app/var
   depends_on:
     database:
       condition: service_healthy
 
 services:
   database:
-    image: postgres:16-bookworm
+    image: postgis/postgis:16-3.4
+    pull_policy: never
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:?impostare POSTGRES_USER in .env}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?impostare POSTGRES_PASSWORD in .env}
-      POSTGRES_DB: ${POSTGRES_DB:?impostare POSTGRES_DB in .env}
+      POSTGRES_USER: ${APP_POSTGRES_USER:?impostare APP_POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${APP_POSTGRES_PASSWORD:?impostare APP_POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${APP_POSTGRES_DB:-${POSTGRES_DB}}
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - app_pgdata:/var/lib/postgresql/data
+      - ./docker/postgres/app-init:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "127.0.0.1:${APP_POSTGRES_PORT:-5433}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
@@ -33,22 +38,63 @@ services:
       retries: 10
 
   app:
-    <<: *app
-    command: morbo -l http://*:3000 -w lib -w templates -w config bin/app
+    <<: *production-app
     ports:
       - "127.0.0.1:3000:3000"
 
   worker:
-    <<: *app
+    <<: *production-app
+    command: perl bin/worker
+
+  dev:
+    image: perl-script-manager:dev
+    build:
+      context: .
+      target: dev
+    profiles: ["development"]
+    environment:
+      <<: *app-env
+      MOJO_MODE: development
+    volumes:
+      - .:/app
+    depends_on:
+      database:
+        condition: service_healthy
+    command: morbo -l http://*:3000 -w lib -w templates -w config bin/app
+    ports:
+      - "127.0.0.1:3001:3000"
+
+  dev-worker:
+    image: perl-script-manager:dev
+    build:
+      context: .
+      target: dev
+    profiles: ["development"]
+    environment:
+      <<: *app-env
+      MOJO_MODE: development
+    volumes:
+      - .:/app
+    depends_on:
+      database:
+        condition: service_healthy
     command: perl bin/worker
 
   test:
-    <<: *app
+    image: perl-script-manager:test
+    build:
+      context: .
+      target: dev
     profiles: ["test"]
     environment:
-      <<: *app-env
-      TEST_ONLINE: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@database:5432/${POSTGRES_DB}
+      TEST_ONLINE: postgresql://${APP_POSTGRES_USER}:${APP_POSTGRES_PASSWORD}@database:5432/${APP_POSTGRES_DB:-${POSTGRES_DB}}
+    volumes:
+      - .:/app
+    depends_on:
+      database:
+        condition: service_healthy
     command: prove -lr t
 
 volumes:
-  pgdata:
+  app_pgdata:
+  app_data:

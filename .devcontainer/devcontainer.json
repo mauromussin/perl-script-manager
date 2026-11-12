@@ -1,8 +1,8 @@
 {
   "name": "perl-script-manager",
   "dockerComposeFile": ["../compose.yaml"],
-  "service": "app",
-  "runServices": ["app", "worker", "database"],
+  "service": "dev",
+  "runServices": ["dev", "dev-worker", "database"],
   "workspaceFolder": "/app",
   "remoteUser": "app",
   "shutdownAction": "stopCompose",

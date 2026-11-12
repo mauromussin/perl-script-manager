@@ -114,7 +114,8 @@ sub _load_config ($self) {
     %config = %{_merge(\%config, YAML::PP->new->load_file("$file") // {})} if -f $file;
 
     my %env;
-    $env{database} = {url => $ENV{DATABASE_URL}} if $ENV{DATABASE_URL};
+    $env{database}{url}    = $ENV{DATABASE_URL} if $ENV{DATABASE_URL};
+    $env{database}{schema} = $ENV{SCRIPT_MANAGER_DATABASE_SCHEMA} if $ENV{SCRIPT_MANAGER_DATABASE_SCHEMA};
     $env{secret}   = $ENV{SCRIPT_MANAGER_SECRET} if $ENV{SCRIPT_MANAGER_SECRET};
     %config = %{_merge(\%config, \%env)};
 

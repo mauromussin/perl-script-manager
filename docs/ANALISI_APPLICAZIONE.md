@@ -4,7 +4,7 @@
 
 **Stato del documento:** bozza iniziale per lo sviluppo assistito con GitHub Copilot in Visual Studio Code  
 **Versione:** 0.1.0  
-**Ambiente previsto:** Docker, Visual Studio Code Dev Containers, Perl, Mojolicious, Minion, PostgreSQL  
+**Ambiente previsto:** Docker, Visual Studio Code Dev Containers, Perl, Mojolicious, Minion, PostGIS
 
 ---
 
@@ -137,7 +137,7 @@ Devono essere versionati:
 | Linguaggio | Perl 5 | Compatibilità con gli script attuali |
 | Framework web | Mojolicious | Framework Perl completo, leggero e adatto anche a WebSocket e API |
 | Job asincroni | Minion | Integrazione nativa con Mojolicious e persistenza dei job |
-| Database | PostgreSQL | Affidabilità, concorrenza, storico delle esecuzioni e backend Minion |
+| Database | PostGIS (`postgis/postgis:16-3.4`) | Compatibilità PostgreSQL e disponibilità locale dell'immagine per il deployment Compose |
 | Accesso al database | DBI e DBD::Pg | Accesso standard e controllabile a PostgreSQL |
 | Dipendenze | Carton e `cpanfile` | Ambiente Perl riproducibile |
 | Container | Docker Compose | Isolamento e riproducibilità |
@@ -149,7 +149,7 @@ Devono essere versionati:
 | Validazione | JSON::Validator | Schemi formali per input e API |
 | Logging | Log::Any | Astrazione del logging applicativo |
 
-Le versioni definitive dovranno essere fissate nel `cpanfile.snapshot`. Non devono essere introdotte nuove dipendenze senza motivazione e aggiornamento della documentazione.
+Le versioni definitive devono essere fissate e versionate in `cpanfile.snapshot`. Se il file manca, la build dell'immagine genera uno snapshot intermedio per costruire il target production; in questo caso la risoluzione non è riproducibile tra build diverse. Prima di considerare stabile un rilascio, generare e committare lo snapshot.
 
 ---
 
@@ -196,7 +196,7 @@ repository/
 ├── .github/
 │   ├── copilot-instructions.md
 │   └── workflows/
-│       └── test.yml
+│       └── build-image.yml
 ├── .vscode/
 │   ├── settings.json
 │   └── tasks.json
@@ -687,18 +687,19 @@ In sviluppo locale i segreti possono essere forniti esternamente al repository. 
 
 ### 14.1 Servizi Docker Compose
 
-Sono previsti almeno:
+Il Compose predefinito è il deployment locale in modalità production e avvia:
 
-- `app`: server Mojolicious in modalità sviluppo o produzione;
+- `app`: immagine immutabile con il solo runtime necessario e il server Mojolicious;
 - `worker`: worker Minion;
-- `database`: PostgreSQL;
-- eventuale servizio di test separato.
+- `database`: `postgis/postgis:16-3.4`, con volume persistente.
 
-Il codice sorgente può essere montato come volume in sviluppo. In produzione deve essere incluso in un'immagine immutabile.
+Il servizio `database` usa `pull_policy: never`: l'immagine PostGIS deve essere già presente sulla macchina e Compose non deve scaricarla. L'applicazione e il worker non montano il sorgente; l'immagine production contiene il codice necessario. I dati applicativi e del database sono persistenti in volumi Docker.
+
+I servizi `dev` e `dev-worker` del profilo `development` montano il codice sorgente e sono usati dal Dev Container. Il profilo `test` usa l'immagine di sviluppo per eseguire localmente la suite Perl. Questi profili non vengono avviati dal deployment predefinito né dai workflow GitHub Actions.
 
 ### 14.2 Dev Container
 
-Il Dev Container deve aprire il workspace nel servizio `app` e fornire:
+Il Dev Container deve aprire il workspace nel servizio `dev` e fornire:
 
 - Perl;
 - Carton;
@@ -755,7 +756,18 @@ Con `Test::Mojo` verificare almeno:
 - gestione degli errori;
 - download controllato degli artefatti.
 
-### 15.5 Test di sicurezza
+### 15.5 Verifiche GitHub Actions
+
+GitHub Actions non esegue la suite `prove` e non avvia database/PostGIS. Deve limitarsi a:
+
+- validare la configurazione Compose usando `.env.example`;
+- costruire il target production del Dockerfile;
+- verificare la sintassi Perl degli entry point e dei moduli inclusi nell'immagine;
+- pubblicare l'immagine runtime su GHCR solo su push a `main` o a tag `v*`.
+
+I test unitari, d'integrazione e web restano disponibili nel profilo Compose locale `test`.
+
+### 15.6 Test di sicurezza
 
 Prevedere casi relativi a:
 
@@ -810,8 +822,9 @@ GitHub Copilot deve operare secondo le seguenti regole:
 14. Non modificare simultaneamente più script legacy senza completare inventario e test di quello in lavorazione.
 15. Preferire modifiche piccole, verificabili e reversibili.
 16. Eseguire, quando disponibili, i comandi di test, lint e controllo sintattico.
-17. Riportare gli errori dei comandi senza nasconderli o sostituirli con risultati ipotetici.
-18. Non considerare completata una migrazione finché non sono soddisfatti i criteri di accettazione.
+17. I workflow GitHub Actions validano solo la configurazione Compose e l'immagine production; non eseguono la suite `prove`.
+18. Riportare gli errori dei comandi senza nasconderli o sostituirli con risultati ipotetici.
+19. Non considerare completata una migrazione finché non sono soddisfatti i criteri di accettazione.
 
 ### Prompt operativo suggerito per Copilot Chat
 
@@ -844,11 +857,11 @@ non modificare altri script legacy.
 
 - creare la struttura del repository;
 - aggiungere `.gitignore`, `.dockerignore` ed `.editorconfig`;
-- creare `Dockerfile`, `compose.yaml` e Dev Container;
+- creare `Dockerfile`, il Compose production locale con PostGIS e il Dev Container;
 - predisporre `cpanfile`;
 - verificare l'avvio di una pagina Mojolicious minima;
 - verificare connessione a PostgreSQL;
-- predisporre pipeline di test.
+- predisporre il workflow GitHub di build e controllo sintattico dell'immagine production.
 
 ### Milestone 2: acquisizione legacy
 
@@ -897,7 +910,7 @@ non modificare altri script legacy.
 La prima versione è accettabile quando:
 
 - l'ambiente si apre tramite VS Code Dev Containers;
-- `docker compose up` avvia applicazione, worker e database;
+- `docker compose up --build` avvia l'immagine production, il worker e PostGIS locale;
 - l'applicazione mostra il catalogo delle procedure;
 - almeno uno script è stato migrato senza perdita di comportamento approvato;
 - i parametri sono validati lato server;
@@ -907,7 +920,8 @@ La prima versione è accettabile quando:
 - esistono test unitari, di integrazione e web;
 - non sono presenti credenziali o dati sensibili nel repository;
 - il container non esegue l'applicazione come root;
-- il codice supera controllo sintattico, test e regole di qualità concordate;
+- il codice supera i test locali e le regole di qualità concordate;
+- GitHub Actions costruisce l'immagine production e ne verifica la sintassi senza avviare database o `prove`;
 - la procedura può essere eseguita anche tramite CLI;
 - la documentazione permette a un nuovo sviluppatore di avviare l'ambiente.
 
@@ -930,7 +944,7 @@ Prima della configurazione di produzione devono essere definite:
 - periodo di conservazione di log e artefatti;
 - natura dei dati trattati;
 - eventuali vincoli Windows degli script esistenti;
-- necessità di PostGIS oltre a PostgreSQL;
+- eventuali estensioni PostGIS aggiuntive rispetto all'immagine `postgis/postgis:16-3.4`;
 - modalità di gestione e rotazione dei segreti.
 
 Questi punti non bloccano l'inventario e la prima migrazione, ma impediscono di considerare definitiva l'architettura di produzione.
