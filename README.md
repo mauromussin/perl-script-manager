@@ -7,7 +7,7 @@ Specifica completa: [docs/ANALISI_APPLICAZIONE.md](docs/ANALISI_APPLICAZIONE.md)
 
 ```bash
 cp .env.example .env          # impostare credenziali e segreto locali
-docker compose up --build -d  # app su http://127.0.0.1:3000
+docker compose up --build -d  # app su http://127.0.0.1:3080
 ```
 
 Compose avvia l'immagine applicativa `production`, il worker e `postgis/postgis:16-3.4`.
@@ -17,7 +17,7 @@ volumi Docker; il codice non viene montato nell'immagine di produzione.
 
 `APP_POSTGRES_USER`, `APP_POSTGRES_PASSWORD`, `APP_POSTGRES_DB` e `SCRIPT_MANAGER_SECRET`
 sono configurazioni locali obbligatorie. La porta database è pubblicata solo su
-`127.0.0.1:5433`; l'app è disponibile su `127.0.0.1:3000`.
+`127.0.0.1:5433`; l'app è disponibile su `127.0.0.1:3080` (porta container `3000`).
 La password deve essere compatibile con una URL PostgreSQL oppure percent-encoded.
 
 ```bash
