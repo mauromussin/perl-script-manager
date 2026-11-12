@@ -697,6 +697,13 @@ Il servizio `database` usa `pull_policy: never`: l'immagine PostGIS deve essere 
 
 I servizi `dev` e `dev-worker` del profilo `development` montano il codice sorgente e sono usati dal Dev Container. Il profilo `test` usa l'immagine di sviluppo per eseguire localmente la suite Perl. Questi profili non vengono avviati dal deployment predefinito né dai workflow GitHub Actions.
 
+Se il download dai registry e bloccato, il workflow fornisce anche l'immagine
+production completa come artifact TAR con checksum SHA256. Dopo la verifica
+del checksum e `docker load`, il deployment usa `APP_IMAGE=perl-script-manager:production`
+e `--no-build --pull never`. Non richiede accesso locale a CPAN ne la ricompilazione
+delle dipendenze. Il download dell'artifact GitHub resta un requisito di rete
+da verificare, oppure il file deve essere trasferito tramite un canale autorizzato.
+
 ### 14.2 Dev Container
 
 Il Dev Container deve aprire il workspace nel servizio `dev` e fornire:
@@ -763,6 +770,9 @@ GitHub Actions non esegue la suite `prove` e non avvia database/PostGIS. Deve li
 - validare la configurazione Compose usando `.env.example`;
 - costruire il target production del Dockerfile;
 - verificare la sintassi Perl degli entry point e dei moduli inclusi nell'immagine;
+- esportare la stessa immagine production Linux/amd64 come artifact TAR con
+  checksum SHA256, verificarne checksum, reimportazione e identita; mantenere
+  l'artifact per 7 giorni anche per esecuzioni manuali senza pubblicazione;
 - pubblicare l'immagine runtime solo su Docker Hub (`mauromussin/perl-script-manager`)
   su push a `main` o a tag `v*`, senza pubblicazione su GHCR;
 - autenticarsi tramite i repository secret GitHub `DOCKERHUB_USERNAME` e `DOCKERHUB_TOKEN`,

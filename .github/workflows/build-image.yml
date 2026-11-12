@@ -31,13 +31,27 @@ jobs:
           fi
 
       - name: Build production image
-        run: docker build --target production --tag perl-script-manager:ci .
+        run: docker build --platform linux/amd64 --target production --tag perl-script-manager:ci .
 
       - name: Check production entry points
         run: |
           docker run --rm --entrypoint perl perl-script-manager:ci -Ilib -c bin/app
           docker run --rm --entrypoint perl perl-script-manager:ci -Ilib -c bin/worker
           docker run --rm --entrypoint perl perl-script-manager:ci -Ilib -c bin/procedure
+
+      - name: Export production image for offline deployment
+        run: sh docker/export-image.sh
+
+      - name: Upload offline production image
+        uses: actions/upload-artifact@v4
+        with:
+          name: perl-script-manager-linux-amd64-${{ github.sha }}
+          path: |
+            image-artifact/perl-script-manager.tar
+            image-artifact/perl-script-manager.tar.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
 
       - name: Publish production image
         if: github.event_name == 'push'

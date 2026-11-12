@@ -3,6 +3,7 @@
 .env.*
 !.env.example
 local
+image-artifact
 var/input/*
 var/output/*
 var/logs/*

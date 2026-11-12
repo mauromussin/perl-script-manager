@@ -9,6 +9,7 @@ var/logs/*
 !var/output/.gitkeep
 !var/logs/.gitkeep
 local/
+image-artifact/
 .carton/
 *.bak
 *.tdy
