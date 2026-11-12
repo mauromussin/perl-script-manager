@@ -763,7 +763,10 @@ GitHub Actions non esegue la suite `prove` e non avvia database/PostGIS. Deve li
 - validare la configurazione Compose usando `.env.example`;
 - costruire il target production del Dockerfile;
 - verificare la sintassi Perl degli entry point e dei moduli inclusi nell'immagine;
-- pubblicare l'immagine runtime su GHCR solo su push a `main` o a tag `v*`.
+- pubblicare l'immagine runtime solo su Docker Hub (`mauromussin/perl-script-manager`)
+  su push a `main` o a tag `v*`, senza pubblicazione su GHCR;
+- autenticarsi tramite i repository secret GitHub `DOCKERHUB_USERNAME` e `DOCKERHUB_TOKEN`,
+  senza salvare il token nei file del progetto.
 
 I test unitari, d'integrazione e web restano disponibili nel profilo Compose locale `test`.
 

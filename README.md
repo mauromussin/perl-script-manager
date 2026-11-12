@@ -31,18 +31,36 @@ docker compose down
 GitHub Actions controlla la configurazione Compose, costruisce il target `production` e
 verifica la sintassi Perl contenuta nell'immagine. Non avvia database e non esegue `prove`.
 Su push a `main` o a un tag `v*`, pubblica l'immagine runtime su
-`ghcr.io/<owner>/<repo>` con tag `latest` (per `main`), il tag Git e `sha-<commit>`.
+`docker.io/mauromussin/perl-script-manager` con tag `latest` (per `main`), il tag Git
+(solo per push di tag `v*`) e `sha-<commit>`. Non pubblica piu su GHCR.
+
+### Configurazione Docker Hub
+
+Non serve collegare gli account GitHub e Docker Hub:
+
+1. Creare su Docker Hub il repository `mauromussin/perl-script-manager`, pubblico per
+   consentire il download senza autenticazione.
+2. Creare un access token Docker Hub con permessi Read & Write, senza Delete.
+3. In GitHub, aprire **Settings > Secrets and variables > Actions > New repository secret**
+   e aggiungere `DOCKERHUB_USERNAME` (valore `mauromussin`) e `DOCKERHUB_TOKEN` (il token).
+4. Fare push su `main` e verificare che lo step `Publish production image` termini con successo.
+
+I token non devono essere salvati in `.env` o nei file versionati. Le pull request e
+le esecuzioni manuali verificano l'immagine senza pubblicarla.
 
 Per usare l'immagine invece di costruirla in locale:
 
 ```bash
-docker login ghcr.io          # utente GitHub + Personal Access Token con scope read:packages
+# Solo se il repository Docker Hub e privato:
+# docker login docker.io --username mauromussin
 docker compose pull app worker
 docker compose up -d --no-build
 ```
 
-Compose usa `ghcr.io/mauromussin/perl-script-manager:latest` per app e worker.
-`APP_IMAGE` permette di scegliere un altro tag, per esempio `sha-2101954`.
+Compose usa `docker.io/mauromussin/perl-script-manager:latest` per app e worker.
+`APP_IMAGE` permette di scegliere un altro riferimento completo, per esempio
+`docker.io/mauromussin/perl-script-manager:sha-<commit>`, dopo la sua pubblicazione.
+Se `.env` contiene ancora un riferimento GHCR in `APP_IMAGE`, rimuoverlo o aggiornarlo.
 Per costruire invece un'immagine locale, impostare `APP_IMAGE=perl-script-manager:production`
 e usare `docker compose up --build -d`.
 

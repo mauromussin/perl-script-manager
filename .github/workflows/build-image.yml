@@ -9,7 +9,6 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
   production-image:
@@ -19,6 +18,17 @@ jobs:
 
       - name: Validate Compose configuration
         run: docker compose --env-file .env.example config --quiet
+
+      - name: Check Docker Hub credentials
+        if: github.event_name == 'push'
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [ -z "$DOCKERHUB_USERNAME" ] || [ -z "$DOCKERHUB_TOKEN" ]; then
+            echo "::error::Configure the DOCKERHUB_USERNAME and DOCKERHUB_TOKEN repository secrets."
+            exit 1
+          fi
 
       - name: Build production image
         run: docker build --target production --tag perl-script-manager:ci .
@@ -32,10 +42,11 @@ jobs:
       - name: Publish production image
         if: github.event_name == 'push'
         env:
-          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
-          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
-          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          printf '%s' "$DOCKERHUB_TOKEN" | docker login docker.io --username "$DOCKERHUB_USERNAME" --password-stdin
+          image="docker.io/mauromussin/perl-script-manager"
           tags=("sha-${GITHUB_SHA::7}")
           if [ "$GITHUB_REF" = "refs/heads/main" ]; then
             tags+=("latest")
