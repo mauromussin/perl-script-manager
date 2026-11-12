@@ -7,7 +7,7 @@ x-app-env: &app-env
   SCRIPT_MANAGER_WORKER_JOBS: ${SCRIPT_MANAGER_WORKER_JOBS:-2}
 
 x-production-app: &production-app
-  image: ${APP_IMAGE:-perl-script-manager:production}
+  image: ${APP_IMAGE:-ghcr.io/mauromussin/perl-script-manager:latest}
   build:
     context: .
     target: production

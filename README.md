@@ -7,7 +7,8 @@ Specifica completa: [docs/ANALISI_APPLICAZIONE.md](docs/ANALISI_APPLICAZIONE.md)
 
 ```bash
 cp .env.example .env          # impostare credenziali e segreto locali
-docker compose up --build -d  # app su http://127.0.0.1:3080
+docker compose pull app worker
+docker compose up --no-build -d  # app su http://127.0.0.1:3080
 ```
 
 Compose avvia l'immagine applicativa `production`, il worker e `postgis/postgis:16-3.4`.
@@ -36,9 +37,14 @@ Per usare l'immagine invece di costruirla in locale:
 
 ```bash
 docker login ghcr.io          # utente GitHub + Personal Access Token con scope read:packages
-# in .env: APP_IMAGE=ghcr.io/<owner>/<repo>:latest
+docker compose pull app worker
 docker compose up -d --no-build
 ```
+
+Compose usa `ghcr.io/mauromussin/perl-script-manager:latest` per app e worker.
+`APP_IMAGE` permette di scegliere un altro tag, per esempio `sha-2101954`.
+Per costruire invece un'immagine locale, impostare `APP_IMAGE=perl-script-manager:production`
+e usare `docker compose up --build -d`.
 
 ## Test locali
 
