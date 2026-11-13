@@ -37,6 +37,14 @@
       <option value="<%= $opt %>"<%= $selected{$opt} ? ' selected' : '' %>><%= $opt %></option>
 %   }
     </select>
+% } elsif ($p->{enum} && ($p->{'x-widget'} // '') eq 'radio') {
+    <fieldset>
+      <legend><%= $label %></legend>
+%   for my $opt (@{$p->{enum}}) {
+      <label><input type="radio" name="<%= $name %>" value="<%= $opt %>"<%= (defined $value && $value eq $opt) ? ' checked' : '' %><%= $req ? ' required' : '' %>>
+        <%= $p->{'x-enum-labels'}{$opt} // $opt %></label>
+%   }
+    </fieldset>
 % } elsif ($p->{enum}) {
     <label for="f_<%= $name %>"><%= $label %></label>
     <select id="f_<%= $name %>" name="<%= $name %>"<%= $req ? ' required' : '' %>>

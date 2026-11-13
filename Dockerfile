@@ -2,7 +2,7 @@ FROM perl:5.40-slim-bookworm AS base
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        build-essential libpq-dev libssl-dev zlib1g-dev ca-certificates \
+        build-essential libpq-dev libmariadb-dev pkg-config libssl-dev zlib1g-dev ca-certificates \
         postgresql-client git bash \
     && rm -rf /var/lib/apt/lists/* \
     && cpanm --notest Carton \
@@ -36,14 +36,15 @@ RUN carton install --deployment --without develop,test
 
 FROM perl:5.40-slim-bookworm AS production
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates libpq5 \
+    && apt-get install -y --no-install-recommends ca-certificates libpq5 libmariadb3 tzdata \
     && rm -rf /var/lib/apt/lists/*
 
 ENV PERL_CARTON_PATH=/opt/perl-local \
     PERL5LIB=/opt/perl-local/lib/perl5 \
     PATH=/opt/perl-local/bin:$PATH \
     MOJO_HOME=/app \
-    MOJO_MODE=production
+    MOJO_MODE=production \
+    TZ=Europe/Rome
 
 RUN groupadd --gid 1000 app \
     && useradd --uid 1000 --gid app --create-home --shell /bin/bash app \

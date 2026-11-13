@@ -1,3 +1,31 @@
+parameter_schema:
+  type: object
+  required: [radar, database, folder]
+  properties:
+    radar:
+      type: string
+      title: Radar e revisione MRT
+      x-widget: radio
+      x-order: 1
+    merge_midnight:
+      type: boolean
+      title: Unisci le tracce spezzate a mezzanotte
+      default: true
+      x-order: 2
+    database:
+      type: string
+      title: Database MySQL di destinazione
+      pattern: '^[A-Za-z0-9_]{1,64}$'
+      maxLength: 64
+      x-order: 3
+    folder:
+      type: string
+      title: Sottocartella dei file OUT (punto per la cartella radice)
+      minLength: 1
+      maxLength: 240
+      default: '.'
+      x-order: 4
+
 loader_profiles:
   execution_ready: false
   execution_note: >-

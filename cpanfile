@@ -1,6 +1,7 @@
 requires 'perl', '5.036';
 
 requires 'DBD::Pg';
+requires 'DBD::MariaDB';
 requires 'IPC::Run';
 requires 'JSON::Validator', '>= 5.14';
 requires 'Log::Any';

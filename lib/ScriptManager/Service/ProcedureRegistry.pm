@@ -14,6 +14,12 @@ sub load ($self) {
     my $doc = YAML::PP->new(boolean => 'JSON::PP')->load_file($self->file->to_string);
     my (%by_code, @list);
     for my $p (@{$doc->{procedures} // []}) {
+        if (my $schema_file = $p->{parameter_schema_file}) {
+            die "Nome file schema non valido\n" unless $schema_file =~ /\A[A-Za-z0-9_-]+\.yml\z/;
+            $p->{parameter_schema} = YAML::PP->new(boolean => 'JSON::PP')
+                ->load_file($self->file->dirname->child($schema_file)->to_string)->{parameter_schema}
+                // die "Schema parametri mancante in $schema_file\n";
+        }
         $self->_check($p);
         $p->{parameter_schema}{type}                 //= 'object';
         $p->{parameter_schema}{additionalProperties} //= false;
@@ -57,6 +63,8 @@ sub _check ($self, $p) {
         die "Procedura $code: modulo $p->{handler_class} non trovato\n";
     }
     die "Procedura $code: il handler non implementa run()\n" unless $p->{handler_class}->can('run');
+    $p->{handler_class}->configure_schema($p->{parameter_schema}, $self->file->dirname)
+        if $p->{handler_class}->can('configure_schema');
     my $v = ScriptManager::Validation::Parameters->new(schema => $p->{parameter_schema} //= {});
     die "Procedura $code: parametri x-sensitive richiedono execution_mode sync\n"
         if $v->has_sensitive && $p->{execution_mode} ne 'sync';

@@ -2,6 +2,19 @@
 # handler_class deve trovarsi sotto ScriptManager::Command::.
 # Parametri con "x-sensitive: true" non vengono salvati e richiedono execution_mode: sync.
 procedures:
+  - code: carica_db
+    name: 02-carica_DB
+    description: >-
+      Carica i file OUT in MySQL. Scegli radar/revisione, unione a mezzanotte,
+      database e sottocartella. Il codice ICAO nel nome identifica l'aeroporto;
+      credenziali e host sono configurati sul server. I duplicati annullano il caricamento.
+    enabled: true
+    handler_class: ScriptManager::Command::CaricaDB
+    execution_mode: async
+    timeout_seconds: 3600
+    exclusive: true
+    retention_days: 7
+    parameter_schema_file: 02-carica-variants.yml
   - code: example_echo
     name: Esempio - eco con file di output
     description: >-

@@ -8,3 +8,4 @@ var/input/*
 var/output/*
 var/logs/*
 config/application.yml
+config/local/*.json

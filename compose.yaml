@@ -5,6 +5,13 @@ x-app-env: &app-env
   SCRIPT_MANAGER_DATABASE_SCHEMA: script_manager
   SCRIPT_MANAGER_SECRET: ${SCRIPT_MANAGER_SECRET:?impostare SCRIPT_MANAGER_SECRET in .env}
   SCRIPT_MANAGER_WORKER_JOBS: ${SCRIPT_MANAGER_WORKER_JOBS:-2}
+  MYSQL_HOST: ${MYSQL_HOST:-}
+  MYSQL_PORT: ${MYSQL_PORT:-3306}
+  MYSQL_USER: ${MYSQL_USER:-}
+  MYSQL_PASSWORD: ${MYSQL_PASSWORD:-}
+  MRT_CONFIG_FILE: /app/config/local/MRT.json
+  SCRIPT_MANAGER_OUT_ROOT: /app/var/input
+  TZ: Europe/Rome
 
 x-production-app: &production-app
   image: ${APP_IMAGE:-docker.io/mauromussin/perl-script-manager:latest}
@@ -14,6 +21,13 @@ x-production-app: &production-app
   environment: *app-env
   volumes:
     - app_data:/app/var
+    - type: bind
+      source: ${FILE_OUT_ROOT:-./var/input}
+      target: /app/var/input
+      read_only: true
+      bind:
+        create_host_path: false
+    - ./config/local:/app/config/local:ro
   depends_on:
     database:
       condition: service_healthy
@@ -57,6 +71,12 @@ services:
       MOJO_MODE: development
     volumes:
       - .:/app
+      - type: bind
+        source: ${FILE_OUT_ROOT:-./var/input}
+        target: /app/var/input
+        read_only: true
+        bind:
+          create_host_path: false
     depends_on:
       database:
         condition: service_healthy
@@ -75,6 +95,12 @@ services:
       MOJO_MODE: development
     volumes:
       - .:/app
+      - type: bind
+        source: ${FILE_OUT_ROOT:-./var/input}
+        target: /app/var/input
+        read_only: true
+        bind:
+          create_host_path: false
     depends_on:
       database:
         condition: service_healthy

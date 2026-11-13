@@ -2,6 +2,7 @@
 .env.*
 !.env.example
 config/application.yml
+config/local/*.json
 var/input/*
 var/output/*
 var/logs/*

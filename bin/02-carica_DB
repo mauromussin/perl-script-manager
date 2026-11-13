@@ -1,0 +1,7 @@
+#!/usr/bin/env perl
+use strict;
+use warnings;
+use FindBin;
+
+exec $^X, "$FindBin::Bin/procedure", 'run', 'carica_db', @ARGV;
+die "Impossibile avviare 02-carica_DB: $!\n";

@@ -1,0 +1,20 @@
+{
+  "airports": {
+    "LIML": "Milano Linate",
+    "LIMC": "Milano Malpensa",
+    "LIME": "Bergamo Orio al Serio",
+    "LIPO": "Brescia Montichiari"
+  },
+  "radars": [
+    {"id": "lin_2017", "description": "LIN - coordinate dal 25 ottobre 2017", "revision_date": null, "x_m": 1521961.05, "y_m": 5034234.14},
+    {"id": "lin_2024", "description": "LIN - coordinate di test 2024", "revision_date": "2024-02-05", "x_m": 1522032.947, "y_m": 5034120.016},
+    {"id": "lin_2025", "description": "LIN - variante denominata 2025", "revision_date": null, "x_m": 1521935.012, "y_m": 5034308.734},
+    {"id": "lin_2026", "description": "LIN - revisione 2026", "revision_date": "2026-02-02", "x_m": 1521934.03, "y_m": 5034214.34},
+    {"id": "orio_radar_lin", "description": "ORIO - radar LIN", "revision_date": null, "x_m": 1520711.5, "y_m": 5034234.15},
+    {"id": "orio_dbltrk", "description": "ORIO - radar precedente", "revision_date": null, "x_m": 1555262.5, "y_m": 5057915.15},
+    {"id": "orio_dbltrk_new_radar", "description": "ORIO - nuovo radar", "revision_date": null, "x_m": 1555460, "y_m": 5057920},
+    {"id": "mxp_dbltrk_2015", "description": "MXP - variante dal 6 marzo 2015", "revision_date": null, "x_m": 1521977.2, "y_m": 5034034.23},
+    {"id": "vbs_dbltrk", "description": "VBS - radar locale", "revision_date": null, "x_m": 1688581.27, "y_m": 5025286.91},
+    {"id": "vbs_radar_lin_dbltrk", "description": "VBS - radar LIN", "revision_date": null, "x_m": 1521961.5, "y_m": 5034514.15}
+  ]
+}
