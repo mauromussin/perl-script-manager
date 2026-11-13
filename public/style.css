@@ -26,3 +26,5 @@ button, .button { padding: .45rem 1rem; border: 0; border-radius: 4px; backgroun
 .log td { font-family: ui-monospace, monospace; font-size: .85rem; }
 .log tr.error td { color: #9b1c1c; }
 .log tr.warning td { color: #8a5a00; }
+.log tr.critical td { color: #9b1c1c; background: #f6d2d2; font-weight: 700; }
+.log td:last-child { overflow-wrap: anywhere; }

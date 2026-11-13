@@ -8,6 +8,7 @@ use ScriptManager::Service::Context;
 
 has [qw(repo registry minion output_root process_runner)];
 has retention_days => 30;
+has debug_operations => 0;
 has logger         => sub { Log::Any->get_logger(category => 'ScriptManager::Execution') };
 
 # Validates the input and creates an execution. Returns {id => ...} or {errors => [...]}.
@@ -28,6 +29,7 @@ sub submit ($self, $code, $input, %o) {
     if ($proc->{execution_mode} eq 'async') {
         my $job_id = $self->minion->enqueue(run_procedure => [$id], {attempts => 1});
         $self->repo->set_job_id($id, $job_id);
+        $self->repo->add_event($id, 'info', "Procedura $code accodata al worker (job $job_id)", event_type => 'state');
     }
     else {
         $self->execute($id, $params);
@@ -45,6 +47,7 @@ sub execute ($self, $id, $params = undef) {
         repo           => $self->repo,
         output_root    => $self->output_root,
         logger         => $self->logger,
+        debug_operations => $self->debug_operations,
         retention_days => $proc ? ($proc->{retention_days} // $self->retention_days) : $self->retention_days,
     );
     $ctx->log(info => 'Esecuzione avviata', event_type => 'state');
@@ -54,13 +57,14 @@ sub execute ($self, $id, $params = undef) {
         $err = ScriptManager::Exception->new(code => 'procedure_disabled', message => 'Procedura non più disponibile');
     }
     else {
-        my $handler = $proc->{handler_class}->new(logger => $self->logger, process_runner => $self->process_runner);
         my $timeout = $proc->{timeout_seconds};
         my $ok      = eval {
             local $SIG{ALRM} = sub {
                 die ScriptManager::Exception->new(code => 'timed_out', message => "Timeout di $timeout secondi superato");
             };
             alarm $timeout;
+            $ctx->log(info => "Preparazione comando $proc->{handler_class}; timeout $timeout secondi");
+            my $handler = $proc->{handler_class}->new(logger => $self->logger, process_runner => $self->process_runner);
             $result = $handler->run($ctx, $params // $exec->{parameters});
             alarm 0;
             1;
@@ -69,13 +73,16 @@ sub execute ($self, $id, $params = undef) {
         $err = $@ || 'errore sconosciuto' unless $ok;
     }
 
-    my %final = $self->_outcome($result, $err);
-    $ctx->log($final{status} eq 'completed' ? 'info' : 'error', $final{summary} // $final{error_message}, event_type => 'state');
+    my %final = $self->_outcome($result, $err, $id);
+    my $level = $final{status} eq 'completed' ? 'info'
+        : ($final{error_code} // '') eq 'internal_error' ? 'critical'
+        : $final{status} eq 'cancelled' ? 'warning' : 'error';
+    $ctx->log($level, $final{summary} // $final{error_message}, event_type => 'state');
     $self->repo->mark_finished($id, %final);
     return $final{status};
 }
 
-sub _outcome ($self, $result, $err) {
+sub _outcome ($self, $result, $err, $id) {
     if (!$err) {
         return (status => 'completed', exit_code => 0, summary => $result->{message} // 'Completata')
             if ref $result eq 'HASH' && $result->{success};
@@ -90,9 +97,10 @@ sub _outcome ($self, $result, $err) {
         my $status = $err->code eq 'timed_out' ? 'timed_out' : $err->code eq 'cancelled' ? 'cancelled' : 'failed';
         return (status => $status, exit_code => 1, error_code => $err->code, error_message => $err->message);
     }
-    $self->logger->error("Errore non gestito: $err");
+    $self->logger->critical("[CRITICAL] [exec=$id] Errore non gestito: $err");
     return (status => 'failed', exit_code => 1, error_code => 'internal_error',
-        error_message => "Errore interno durante l'esecuzione");
+        error_message => "Errore interno durante l'esecuzione. Consultare i log di app e worker "
+            . "(docker compose logs app worker) cercando l'identificatore $id per la causa tecnica");
 }
 
 # Returns the resulting status ('cancelled' | 'cancel_requested') or undef if not cancellable.

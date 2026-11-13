@@ -5,6 +5,8 @@ x-app-env: &app-env
   SCRIPT_MANAGER_DATABASE_SCHEMA: script_manager
   SCRIPT_MANAGER_SECRET: ${SCRIPT_MANAGER_SECRET:?impostare SCRIPT_MANAGER_SECRET in .env}
   SCRIPT_MANAGER_WORKER_JOBS: ${SCRIPT_MANAGER_WORKER_JOBS:-2}
+  SCRIPT_MANAGER_DEBUG_OPERATIONS: ${SCRIPT_MANAGER_DEBUG_OPERATIONS:-0}
+  FILE_OUT_ROOT: ${FILE_OUT_ROOT:-E:\FILE_OUT}
   MYSQL_HOST: ${MYSQL_HOST:-}
   MYSQL_PORT: ${MYSQL_PORT:-3306}
   MYSQL_USER: ${MYSQL_USER:-}
@@ -22,7 +24,7 @@ x-production-app: &production-app
   volumes:
     - app_data:/app/var
     - type: bind
-      source: ${FILE_OUT_ROOT:-./var/input}
+      source: ${FILE_OUT_ROOT:-E:\FILE_OUT}
       target: /app/var/input
       read_only: true
       bind:
@@ -72,7 +74,7 @@ services:
     volumes:
       - .:/app
       - type: bind
-        source: ${FILE_OUT_ROOT:-./var/input}
+        source: ${FILE_OUT_ROOT:-E:\FILE_OUT}
         target: /app/var/input
         read_only: true
         bind:
@@ -96,7 +98,7 @@ services:
     volumes:
       - .:/app
       - type: bind
-        source: ${FILE_OUT_ROOT:-./var/input}
+        source: ${FILE_OUT_ROOT:-E:\FILE_OUT}
         target: /app/var/input
         read_only: true
         bind:

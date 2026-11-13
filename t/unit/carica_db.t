@@ -8,7 +8,7 @@ use ScriptManager::Service::ProcedureRegistry;
 
 {
     package LoaderContext;
-    use Mojo::Base -base, -signatures;
+    use Mojo::Base 'ScriptManager::Service::Context', -signatures;
     has events => sub { [] };
     has percentages => sub { [] };
     sub check_cancel ($self) { }
@@ -39,6 +39,7 @@ use ScriptManager::Service::ProcedureRegistry;
     has duplicate => 0;
     has committed => 0;
     has rolled_back => 0;
+    has rollback_fails => 0;
     has csv => '';
     sub selectall_arrayref ($self, $sql, @values) {
         push @{$self->queries}, [$sql, \@values];
@@ -56,7 +57,10 @@ use ScriptManager::Service::ProcedureRegistry;
         return 1;
     }
     sub commit ($self) { $self->committed(1) }
-    sub rollback ($self) { $self->rolled_back(1) }
+    sub rollback ($self) {
+        die "Rollback unavailable\n" if $self->rollback_fails;
+        $self->rolled_back(1);
+    }
     sub disconnect ($self) { return 1 }
 }
 
@@ -69,6 +73,7 @@ local $ENV{MYSQL_HOST} = 'mysql.example.invalid';
 local $ENV{MYSQL_PORT} = 3306;
 local $ENV{MYSQL_USER} = 'test';
 local $ENV{MYSQL_PASSWORD} = 'test-not-a-secret';
+local $ENV{FILE_OUT_ROOT} = 'E:\FILE_OUT';
 my $config = ScriptManager::Command::CaricaDB->mrt($ENV{MRT_CONFIG_FILE});
 my $header = '20260202120000ABC1234 B738LIMLLIME';
 my $hit = sprintf '%06d%06d%06d%s', 64, -64, 100, '120000';
@@ -90,15 +95,35 @@ subtest 'input sicuro e ICAO dal nome' => sub {
     my $files = ScriptManager::Command::CaricaDB->input_files("$input", '.', $config->{airports});
     is $files->[0]{icao}, 'LIML', 'aeroporto ricavato dal nome';
     eval { ScriptManager::Command::CaricaDB->input_files("$input", '..', $config->{airports}) };
+    ok(ScriptManager::Exception->caught($@, 'invalid_out_folder'), 'errore cartella classificato');
     like "$@", qr/relativo/, 'traversal rifiutato';
     $input->child('LIML_LIME.OUT')->spew("$header$hit\n");
     eval { ScriptManager::Command::CaricaDB->input_files("$input", '.', $config->{airports}) };
+    ok(ScriptManager::Exception->caught($@, 'invalid_out_filename'), 'errore nome classificato');
     like "$@", qr/univoco/, 'aeroporto ambiguo rifiutato';
     $input->child('LIML_LIME.OUT')->remove;
     $input->child('unknown.OUT')->spew("$header$hit\n");
     eval { ScriptManager::Command::CaricaDB->input_files("$input", '.', $config->{airports}) };
     like "$@", qr/univoco/, 'aeroporto assente rifiutato';
     $input->child('unknown.OUT')->remove;
+};
+
+subtest 'cartelle OUT vuote o non disponibili' => sub {
+    my $empty = $work->child('empty')->make_path;
+    $empty->child('nested')->make_path->child('LIML.OUT')->spew("$header$hit\n");
+    $empty->child('notes.txt')->spew('non e un file OUT');
+    eval { ScriptManager::Command::CaricaDB->input_files("$empty", '.', $config->{airports}) };
+    ok(ScriptManager::Exception->caught($@, 'out_files_missing'), 'assenza OUT classificata');
+    like "$@", qr/Nessun file \.OUT/, 'causa comprensibile';
+    like "$@", qr/FILE_OUT_ROOT/, 'indica la configurazione da verificare';
+    like "$@", qr/non nelle sue sottocartelle/, 'ricerca non ricorsiva esplicita';
+    unlike "$@", qr/\Q$work\E/, 'percorso interno non esposto';
+
+    for my $location (["$empty", 'missing'], [$work->child('missing')->to_string, '.']) {
+        eval { ScriptManager::Command::CaricaDB->input_files(@$location, $config->{airports}) };
+        ok(ScriptManager::Exception->caught($@, 'out_folder_unavailable'), 'cartella mancante classificata');
+        unlike "$@", qr/\Q$work\E/, 'percorso interno non esposto';
+    }
 };
 
 subtest 'importazione e opzione mezzanotte' => sub {
@@ -119,7 +144,40 @@ subtest 'importazione e opzione mezzanotte' => sub {
         is scalar(grep { $_->[0] =~ /^SELECT row_id/ } @{$db->queries}), $merge,
             'checkbox governa unione a mezzanotte';
         is $ctx->percentages->[-1], 100, 'avanzamento finale';
+        my $messages = join "\n", map { $_->[1] } @{$ctx->events};
+        like $messages, qr/Cartella OUT sull'host: E:\\FILE_OUT/, 'radice Windows completa nei log';
+        like $messages, qr/\Q$input\E/, 'percorso completo nel container nei log';
+        like $messages, qr/Connessione MySQL riuscita/, 'connessione registrata';
+        like $messages, qr/Transazione MySQL confermata/, 'commit registrato';
+        unlike $messages, qr/test-not-a-secret/, 'password non registrata';
+        unlike $messages, qr/Conversione e scrittura battuta/, 'dettaglio disabilitato di default';
     }
+};
+
+subtest 'sottocartella e dettaglio delle operazioni' => sub {
+    my $nested = $input->child('2026', 'novembre')->make_path;
+    $nested->child('LIML.OUT')->spew("$header$hit\n");
+    my $db = LoaderDatabase->new;
+    my $ctx = LoaderContext->new(debug_operations => 1);
+    my $loader = ScriptManager::Command::CaricaDB->new(connect_db => sub (@args) { $db });
+    ok $loader->run($ctx, {%$params, folder => '2026/novembre'})->{success}, 'caricamento da sottocartella';
+    my $messages = join "\n", map { $_->[1] } @{$ctx->events};
+    like $messages, qr/Cartella OUT sull'host: E:\\FILE_OUT\\2026\\novembre/, 'path host completo della sottocartella';
+    like $messages, qr/\Q$nested\E/, 'path container completo della sottocartella';
+    like $messages, qr/Validazione e inserimento traccia/, 'operazione traccia registrata';
+    like $messages, qr/Conversione e scrittura battuta/, 'operazione battuta registrata';
+    ok $db->committed, 'logging non altera il caricamento';
+};
+
+subtest 'rollback fallito produce un evento CRITICAL' => sub {
+    my $db = LoaderDatabase->new(duplicate => 1, rollback_fails => 1);
+    my $ctx = LoaderContext->new;
+    my $loader = ScriptManager::Command::CaricaDB->new(connect_db => sub (@args) { $db });
+    eval { $loader->run($ctx, $params) };
+    like "$@", qr/Duplicate/, 'errore originale preservato';
+    ok scalar(grep { $_->[0] eq 'critical' && $_->[1] =~ /Rollback MySQL fallito/ } @{$ctx->events}),
+        'fallimento del rollback evidenziato';
+    ok !$db->committed, 'nessun commit';
 };
 
 subtest 'duplicati e warning annullano il caricamento' => sub {

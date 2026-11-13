@@ -21,6 +21,28 @@ sono configurazioni locali obbligatorie. La porta database è pubblicata solo su
 `127.0.0.1:5433`; l'app è disponibile su `127.0.0.1:3080` (porta container `3000`).
 La password deve essere compatibile con una URL PostgreSQL oppure percent-encoded.
 
+### Cartella delle tracce radar
+
+Il mount di default e `E:\FILE_OUT` sull'host Windows, esposto in sola lettura
+come `/app/var/input` sia ad app sia al worker (anche nei servizi di sviluppo).
+La cartella host deve esistere; Compose non la crea automaticamente.
+Per cambiarla impostare `FILE_OUT_ROOT` in `.env`.
+
+Il parametro `folder` accetta `.` oppure una sottocartella relativa, per esempio
+`2026/novembre`. Quest'ultima corrisponde a `E:\FILE_OUT\2026\novembre` sull'host
+e `/app/var/input/2026/novembre` nel container. La ricerca non e ricorsiva.
+L'esecuzione registra entrambi i percorsi completi nei log, anche se non trova
+file, e riporta il percorso dei file individuati.
+
+Dopo aver cambiato il mount, ricreare app e worker:
+
+```powershell
+docker compose up -d --no-build --pull never app worker
+```
+
+Questo comando usa un'immagine gia presente e aggiornata. Il codice production
+non e montato: dopo modifiche al codice occorre prima aggiornare l'immagine.
+
 ```bash
 docker compose logs -f app worker
 docker compose down
@@ -110,6 +132,41 @@ docker compose --profile test run --rm test
 
 Il profilo locale `test` usa l'immagine di sviluppo e il servizio PostGIS già configurato.
 La suite non fa parte delle verifiche GitHub Actions.
+
+## Diagnosi delle esecuzioni fallite
+
+La pagina dell'esecuzione e l'API riportano un codice errore e un messaggio.
+Per il caricamento OUT, `out_files_missing` indica che non ci sono file `.OUT`
+nella cartella selezionata (la ricerca non e ricorsiva). Verificare che
+`FILE_OUT_ROOT` punti alla cartella host contenente i file, montata in
+`/app/var/input` su app e worker, e che il parametro `folder` selezioni la
+sottocartella corretta; `.` indica la radice. `out_folder_unavailable` indica una
+cartella non disponibile, `invalid_out_folder` un percorso non consentito,
+`invalid_out_file` un file fuori dalla radice e `invalid_out_filename` un nome
+senza un unico codice ICAO configurato.
+
+Gli errori imprevisti restano `internal_error`: i dettagli tecnici non sono
+esposti nella pagina o nell'API. Consultare `docker compose logs app worker`
+cercando l'identificatore dell'esecuzione; anche il log tecnico lo riporta.
+Le esecuzioni gia concluse conservano il messaggio originale: i nuovi messaggi
+si applicano alle esecuzioni successive all'aggiornamento di app e worker.
+
+### Livelli e dettaglio operativo
+
+I log dell'esecuzione e quelli Docker distinguono `INFO`, `WARNING`, `ERROR`
+e `CRITICAL` (l'API e il database conservano i codici in minuscolo).
+`INFO` registra le operazioni principali: configurazione, ricerca/apertura e
+chiusura file, connessione/verifiche MySQL, transazione, caricamento, unione a
+mezzanotte, avanzamento e chiusura connessione. `WARNING` segnala anomalie,
+`ERROR` un'operazione fallita e `CRITICAL` un errore imprevisto o un rollback
+fallito, che richiede verifica prima di riprovare. Credenziali MySQL omesse.
+
+Per registrare anche ciascuna traccia e battuta, impostare
+`SCRIPT_MANAGER_DEBUG_OPERATIONS=1` in `.env` e ricreare app e worker.
+Il default e `0`; il dettaglio produce eventi `INFO` con metadata `detail: 1`
+e puo generare molti messaggi e rallentare l'importazione.
+In alternativa, senza override d'ambiente, usare `debug_operations: true` nella
+configurazione applicativa. Il livello storico `debug` resta supportato.
 
 ## CLI
 

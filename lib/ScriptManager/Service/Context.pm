@@ -8,6 +8,7 @@ use ScriptManager::Exception;
 
 # Execution context passed to every command: logging, progress, cancellation and output files.
 has [qw(execution_id repo output_root logger retention_days)];
+has debug_operations => 0;
 has types => sub { Mojolicious::Types->new };
 
 sub output_dir ($self) {
@@ -15,15 +16,24 @@ sub output_dir ($self) {
 }
 
 sub log ($self, $level, $message, %meta) {
+    $level = lc $level;
+    ScriptManager::Exception->throw('invalid_log_level', 'Livello di log non valido')
+        unless $level =~ /\A(?:info|warning|error|critical|debug)\z/;
     $message = substr($message, 0, 4000) if length $message > 4000;
     $self->repo->add_event($self->execution_id, $level, $message, metadata => \%meta);
     my $method = $level eq 'warning' ? 'warn' : $level;
-    $self->logger->$method(sprintf '[exec=%s] %s', $self->execution_id, $message);
+    $self->logger->$method(sprintf '[%s] [exec=%s] %s', uc($level), $self->execution_id, $message);
     return $self;
+}
+
+sub debug_operation ($self, $message, %meta) {
+    return $self unless $self->debug_operations;
+    return $self->log(info => $message, %meta, detail => 1);
 }
 
 sub progress ($self, $percent, $step = undef) {
     $self->repo->update_progress($self->execution_id, $percent, $step);
+    $self->log(info => "$step: $percent%", operation => 'progress') if defined $step;
     return $self;
 }
 

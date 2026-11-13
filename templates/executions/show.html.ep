@@ -58,7 +58,7 @@
   <tbody>
 % for my $ev (@$events) {
     <tr class="<%= $ev->{level} %>">
-      <td><%= $ev->{created_at} %></td><td><%= $ev->{level} %></td><td><%= $ev->{message} %></td>
+      <td><%= $ev->{created_at} %></td><td><%= uc $ev->{level} %></td><td><%= $ev->{message} %></td>
     </tr>
 % }
   </tbody>

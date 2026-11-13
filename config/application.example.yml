@@ -3,6 +3,7 @@
 #   DATABASE_URL, SCRIPT_MANAGER_SECRET
 
 log_level: info
+debug_operations: false
 
 paths:
   input_dir: var/input

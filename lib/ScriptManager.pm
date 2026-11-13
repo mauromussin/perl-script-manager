@@ -17,6 +17,7 @@ my $MIGRATION_LOCK = 872340;
 
 my %DEFAULTS = (
     log_level => 'info',
+    debug_operations => 0,
     paths     => {
         input_dir       => 'var/input',
         output_dir      => 'var/output',
@@ -61,6 +62,7 @@ sub startup ($self) {
         minion         => $self->minion,
         output_root    => $output_root,
         retention_days => $config->{retention_days},
+        debug_operations => $config->{debug_operations},
         process_runner => ScriptManager::Service::ProcessRunner->new(
             allowed          => $config->{process_commands},
             max_output_bytes => $config->{max_process_output_bytes},
@@ -117,6 +119,11 @@ sub _load_config ($self) {
     $env{database}{url}    = $ENV{DATABASE_URL} if $ENV{DATABASE_URL};
     $env{database}{schema} = $ENV{SCRIPT_MANAGER_DATABASE_SCHEMA} if $ENV{SCRIPT_MANAGER_DATABASE_SCHEMA};
     $env{secret}   = $ENV{SCRIPT_MANAGER_SECRET} if $ENV{SCRIPT_MANAGER_SECRET};
+    if (defined $ENV{SCRIPT_MANAGER_DEBUG_OPERATIONS}) {
+        die "SCRIPT_MANAGER_DEBUG_OPERATIONS deve essere 0 o 1\n"
+            unless $ENV{SCRIPT_MANAGER_DEBUG_OPERATIONS} =~ /\A[01]\z/;
+        $env{debug_operations} = 0 + $ENV{SCRIPT_MANAGER_DEBUG_OPERATIONS};
+    }
     %config = %{_merge(\%config, \%env)};
 
     return _merge(\%config, $self->config);

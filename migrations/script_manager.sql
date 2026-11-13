@@ -65,3 +65,14 @@ drop table if exists execution_artifacts;
 drop table if exists execution_events;
 drop table if exists executions;
 drop table if exists procedures;
+
+-- 2 up
+alter table execution_events drop constraint execution_events_level_check;
+alter table execution_events add constraint execution_events_level_check
+  check (level in ('info', 'warning', 'error', 'critical', 'debug'));
+
+-- 2 down
+update execution_events set level = 'error' where level = 'critical';
+alter table execution_events drop constraint execution_events_level_check;
+alter table execution_events add constraint execution_events_level_check
+  check (level in ('info', 'warning', 'error', 'debug'));
