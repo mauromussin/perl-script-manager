@@ -75,7 +75,7 @@ sub execute ($self, $id, $params = undef) {
 
     my %final = $self->_outcome($result, $err, $id);
     my $level = $final{status} eq 'completed' ? 'info'
-        : ($final{error_code} // '') eq 'internal_error' ? 'critical'
+        : ($final{error_code} // '') =~ /\A(?:internal_error|mysql_recovery_required|mysql_already_published)\z/ ? 'critical'
         : $final{status} eq 'cancelled' ? 'warning' : 'error';
     $ctx->log($level, $final{summary} // $final{error_message}, event_type => 'state');
     $self->repo->mark_finished($id, %final);

@@ -133,6 +133,92 @@ docker compose --profile test run --rm test
 Il profilo locale `test` usa l'immagine di sviluppo e il servizio PostGIS già configurato.
 La suite non fa parte delle verifiche GitHub Actions.
 
+I test MyISAM reali sono opt-in: `TEST_MYSQL=1` crea e rimuove esclusivamente un
+database dal nome univoco `sm_test_mysql_<pid>_<numero>` sul server configurato.
+Non leggono i file radar reali e non scrivono nel database operativo.
+L'account di test deve poter creare/eliminare questi database e usare tutti i
+privilegi necessari nelle sole tabelle di test; `local_infile` deve essere attivo.
+
+```powershell
+$env:TEST_MYSQL = '1'
+docker compose --profile test run --rm test prove -l -Ilib t/integration/carica_myisam.t
+Remove-Item Env:\TEST_MYSQL
+```
+
+## Caricamenti MyISAM e gestione dei fallimenti
+
+`flay` e `battute` possono essere entrambe MyISAM oppure entrambe InnoDB.
+I motori misti non sono supportati. InnoDB mantiene la gestione transazionale;
+MyISAM usa staging e compensazione, senza convertire le tabelle legacy.
+
+Per MyISAM:
+
+1. Un lock applicativo MySQL impedisce due caricamenti contemporanei sullo
+   stesso database, anche da worker diversi.
+2. Tutti i file OUT vengono letti e validati in tabelle di staging vuote,
+   mantenendo anche i vincoli univoci delle tabelle originali. Le battute usano
+   `LOAD DATA LOCAL INFILE` con una lista esplicita di colonne. Qualunque warning
+   rifiuta il caricamento. In questa fase i dati live non vengono modificati.
+3. La pubblicazione acquisisce `LOCK TABLES ... WRITE` su entrambe le tabelle:
+   gli altri client devono attendere. Gli identificatori vengono rimappati e
+   gli intervalli delle nuove righe sono registrati prima delle scritture live.
+4. Se richiesta, l'unione a mezzanotte mantiene il comportamento esistente,
+   comprese le tracce preesistenti. Prima delle modifiche ne vengono salvati
+   i record e le battute interessate, senza copiare tutto lo storico.
+5. Errori, timeout o annullamenti durante la pubblicazione attivano una
+   compensazione sotto gli stessi lock: rimozione delle sole nuove righe per
+   `row_id` e ripristino dei record preesistenti salvati. Non viene usato un
+   falso rollback MyISAM. I contatori AUTO_INCREMENT non vengono riavvolti.
+
+Le tabelle di lavoro persistenti hanno nomi riservati
+`_sm_import_<UUID_senza_trattini>_{flay,battute,undo_flay,undo_battute,state}`.
+Il journal `state` contiene la fase e gli intervalli di ID. Normalmente vengono
+rimosse al termine. Se fallisce soltanto la pulizia dopo una pubblicazione
+riuscita, l'esecuzione resta completata con un WARNING; la pulizia viene ripresa
+al caricamento successivo, dopo verifica della presenza delle nuove righe.
+
+L'account applicativo necessita di `SELECT, INSERT, UPDATE, DELETE, CREATE,
+DROP, ALTER, LOCK TABLES, TRIGGER` sul database scelto. Non servono privilegi globali
+amministrativi. Non sono consentiti trigger su `flay` o `battute`: gli eventuali
+effetti su altre tabelle non sarebbero compensabili. Il privilegio diretto
+`TRIGGER` serve a renderli visibili nei metadati; senza di esso il controllo
+potrebbe scambiare trigger nascosti per trigger assenti. Non e richiesto SUPER
+e il caricatore non crea trigger. Schema e motori vengono
+ricontrollati dopo l'acquisizione dei lock. La riconnessione automatica DBI e
+disabilitata per non proseguire dopo la perdita dei lock.
+
+### Arresti improvvisi e recupero
+
+La compensazione non equivale a una transazione: arresti del worker, perdita
+della connessione, errori durante la compensazione o crash del server possono
+lasciare dati parziali. MyISAM non offre garanzie di crash recovery o durabilita
+equivalenti a InnoDB, anche dopo una pubblicazione riconosciuta dal server.
+
+Un journal `publishing` o `recovery_required`, un journal senza fase leggibile
+o una pubblicazione dichiarata completa con righe mancanti blocca nuovi
+caricamenti con `mysql_recovery_required` e livello CRITICAL. Journal e backup
+vengono conservati. Uno staging `preparing` abbandonato e eliminabile senza
+toccare i dati live, mentre un journal `recovered` indica un recupero confermato
+dall'operatore.
+
+Procedura operativa per il DBA:
+
+1. Fermare i caricamenti e gli altri scrittori sul database, fare un backup e,
+   in caso di crash MySQL, verificare prima l'integrita delle tabelle MyISAM.
+2. Leggere il journal indicato nei log e confrontare staging, intervalli di ID,
+   tabelle `undo_*` e dati live.
+3. Ripristinare i dati sotto esclusione delle scritture. **Non cancellare
+   alla cieca gli intervalli del journal**: dopo un arresto i lock sono persi
+   e altri client potrebbero avere scritto negli stessi intervalli.
+4. Solo dopo verifica del recupero, aggiornare a `recovered` la fase del
+   journal specifico (`id = 1`).
+5. Riprendere i caricamenti: l'applicazione elimina le sole tabelle di lavoro
+   di quel journal e consente una nuova esecuzione.
+
+Non eliminare manualmente journal/backup prima del recupero e non impostare
+`published` per aggirare il blocco. L'applicazione non effettua recuperi
+automatici ambigui dopo la perdita dei lock.
+
 ## Diagnosi delle esecuzioni fallite
 
 La pagina dell'esecuzione e l'API riportano un codice errore e un messaggio.
@@ -151,15 +237,31 @@ cercando l'identificatore dell'esecuzione; anche il log tecnico lo riporta.
 Le esecuzioni gia concluse conservano il messaggio originale: i nuovi messaggi
 si applicano alle esecuzioni successive all'aggiornamento di app e worker.
 
+Gli errori di connessione MySQL riportano il codice diagnostico del server:
+`mysql_authentication` indica credenziali rifiutate o un account non autorizzato
+dal computer client, `mysql_database_access` permessi insufficienti sul database,
+`mysql_database_missing` un database inesistente e `mysql_connect` altri problemi
+di connessione. Un errore `Access denied` non dipende dal mount dei file OUT:
+verificare `MYSQL_USER` e `MYSQL_PASSWORD` in `.env` e l'autorizzazione
+dell'account sul server MySQL per l'host client. Preferire un account dedicato
+con i soli permessi necessari invece di abilitare accessi remoti generici a root.
+Dopo cambiamenti a `.env`, ricreare app e worker.
+
+Per MyISAM, `mysql_duplicate` segnala duplicati e `mysql_load_failed` un errore
+di caricamento gestito senza mantenere le nuove righe; la causa tecnica e nei
+log app/worker. `mysql_recovery_required` conserva journal/backup e blocca
+nuovi caricamenti. `mysql_already_published` avverte che l'errore e avvenuto
+dopo la pubblicazione: non rieseguire senza verifica.
+
 ### Livelli e dettaglio operativo
 
 I log dell'esecuzione e quelli Docker distinguono `INFO`, `WARNING`, `ERROR`
 e `CRITICAL` (l'API e il database conservano i codici in minuscolo).
 `INFO` registra le operazioni principali: configurazione, ricerca/apertura e
 chiusura file, connessione/verifiche MySQL, transazione, caricamento, unione a
-mezzanotte, avanzamento e chiusura connessione. `WARNING` segnala anomalie,
+mezzanotte, staging/pubblicazione o transazione, avanzamento e chiusura connessione. `WARNING` segnala anomalie,
 `ERROR` un'operazione fallita e `CRITICAL` un errore imprevisto o un rollback
-fallito, che richiede verifica prima di riprovare. Credenziali MySQL omesse.
+fallito o un recupero MyISAM necessario, che richiede verifica prima di riprovare. Credenziali MySQL omesse.
 
 Per registrare anche ciascuna traccia e battuta, impostare
 `SCRIPT_MANAGER_DEBUG_OPERATIONS=1` in `.env` e ricreare app e worker.

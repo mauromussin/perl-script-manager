@@ -5,14 +5,17 @@ use DBI;
 use File::Spec;
 use File::Spec::Win32;
 use File::Temp qw(tempdir);
+use Log::Any ();
 use Mojo::File 'path';
 use Mojo::JSON 'decode_json';
 use POSIX qw(tzset);
 use Scalar::Util qw(looks_like_number);
 use ScriptManager::Exception;
+use ScriptManager::Service::MyISAMImport;
 use Time::Local qw(timegm);
 
-has [qw(logger process_runner)];
+has 'process_runner';
+has logger => sub { Log::Any->get_logger(category => 'ScriptManager::CaricaDB') };
 has connect_db => sub { sub (@args) { DBI->connect(@args) } };
 
 sub mrt ($class, $file) {
@@ -177,8 +180,8 @@ sub merge_midnight ($self, $ctx, $db, $airports) {
         } elsif (@$matches > 1) {
             $ctx->log(warning => "Traccia $row->[0]: piu candidati prima della mezzanotte, nessuna unione");
         }
-        $ctx->log(info => 'Unione delle tracce a mezzanotte completata', operation => 'merge_midnight_complete');
     }
+    $ctx->log(info => 'Unione delle tracce a mezzanotte completata', operation => 'merge_midnight_complete');
     return;
 }
 
@@ -204,19 +207,50 @@ sub run ($self, $ctx, $params) {
         unless $ENV{MYSQL_HOST} =~ /\A[A-Za-z0-9.:-]+\z/ && $port =~ /\A\d+\z/ && $port > 0 && $port <= 65535;
     $ctx->log(info => "Connessione MySQL: host $ENV{MYSQL_HOST}, porta $port, database $params->{database}",
         operation => 'mysql_connect');
-    my $db = $self->connect_db->(
-        "DBI:MariaDB:database=$params->{database};host=$ENV{MYSQL_HOST};port=$port",
-        $ENV{MYSQL_USER}, $ENV{MYSQL_PASSWORD},
-        {RaiseError => 1, PrintError => 0, AutoCommit => 1, mariadb_local_infile => 1, mariadb_server_prepare => 0}
-    ) or ScriptManager::Exception->throw('mysql_connect', 'Connessione MySQL fallita');
+    my $db;
+    my $connected = eval {
+        $db = $self->connect_db->(
+            "DBI:MariaDB:database=$params->{database};host=$ENV{MYSQL_HOST};port=$port",
+            $ENV{MYSQL_USER}, $ENV{MYSQL_PASSWORD},
+            {RaiseError => 1, PrintError => 0, AutoCommit => 1, mariadb_local_infile => 1,
+                mariadb_server_prepare => 0, mariadb_auto_reconnect => 0}
+        );
+        1;
+    };
+    my $connect_error = $@;
+    my $mysql_error = $DBI::err;
+    unless ($connected && $db) {
+        die $connect_error if ScriptManager::Exception->caught($connect_error);
+        die $connect_error if !$connected && !defined $mysql_error;
+        my ($code, $message) = ('mysql_connect', 'Connessione MySQL fallita: verificare host, porta e configurazione del server');
+        if (defined $mysql_error) {
+            if ($mysql_error == 1045 || $mysql_error == 1698) {
+                $code = 'mysql_authentication';
+                $message = 'Autenticazione MySQL rifiutata: verificare MYSQL_USER e MYSQL_PASSWORD '
+                    . 'e che l\'account sia autorizzato a collegarsi dal computer che esegue Docker';
+            } elsif ($mysql_error == 1044) {
+                $code = 'mysql_database_access';
+                $message = 'Accesso al database MySQL negato: verificare i permessi dell\'account sul database selezionato';
+            } elsif ($mysql_error == 1049) {
+                $code = 'mysql_database_missing';
+                $message = 'Database MySQL selezionato inesistente: verificare il nome e il server di destinazione';
+            }
+            $message .= " (codice MySQL $mysql_error)";
+        }
+        ScriptManager::Exception->throw($code, $message);
+    }
     $ctx->log(info => 'Connessione MySQL riuscita; verifica tabelle flay e battute',
         operation => 'mysql_schema');
     my $engines = $db->selectall_arrayref(
         'SELECT TABLE_NAME, ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME IN (?, ?)',
         undef, $params->{database}, 'flay', 'battute'
     );
-    ScriptManager::Exception->throw('mysql_schema', 'Servono flay e battute con motore InnoDB per annullare caricamenti errati')
-        unless @$engines == 2 && !grep { ($_->[1] // '') ne 'InnoDB' } @$engines;
+    my %engines = map { $_->[0] => $_->[1] // '' } @$engines;
+    my $myisam = ($engines{flay} // '') eq 'MyISAM' && ($engines{battute} // '') eq 'MyISAM';
+    my $innodb = ($engines{flay} // '') eq 'InnoDB' && ($engines{battute} // '') eq 'InnoDB';
+    ScriptManager::Exception->throw('mysql_schema', 'Servono flay e battute entrambe MyISAM oppure entrambe InnoDB; '
+        . 'motori misti, tabelle mancanti o altri motori non sono supportati') unless $myisam || $innodb;
+    my $session = $myisam ? ScriptManager::Service::MyISAMImport->new(db => $db, ctx => $ctx) : undef;
     $ctx->log(info => 'Verifica abilitazione LOCAL INFILE sul server MySQL', operation => 'mysql_local_infile');
     my ($local_infile) = $db->selectrow_array('SELECT @@local_infile');
     ScriptManager::Exception->throw('mysql_local_infile', 'Abilitare local_infile sul server MySQL') unless $local_infile;
@@ -228,12 +262,20 @@ sub run ($self, $ctx, $params) {
     my %loaded_airports;
     $ctx->log(info => "Radar $radar->{id}, revisione " . ($radar->{revision_date} // 'non documentata')
         . ", origine $radar->{x_m}/$radar->{y_m}; duplicati vietati");
-    $ctx->log(info => 'Avvio transazione MySQL', operation => 'begin_transaction');
-    $db->begin_work;
+    my $transaction_started = 0;
     my $ok = eval {
+        if ($session) {
+            $session->prepare;
+        } else {
+            $ctx->log(info => 'Avvio transazione MySQL', operation => 'begin_transaction');
+            $db->begin_work;
+            $transaction_started = 1;
+        }
+        my $flay_table = $session ? $session->table('flay') : 'flay';
+        my $battute_table = $session ? $session->table('battute') : 'battute';
         $ctx->log(info => 'Preparazione inserimento tracce in flay', operation => 'prepare_tracks');
         my $insert = $db->prepare(
-            'INSERT INTO flay (flay,data,ora,aircraft,airport_dep,airport_arr,flay_operation,data_ora_italy) VALUES (?,?,?,?,?,?,?,?)'
+            "INSERT INTO $flay_table (flay,data,ora,aircraft,airport_dep,airport_arr,flay_operation,data_ora_italy) VALUES (?,?,?,?,?,?,?,?)"
         );
         for my $entry (@$files) {
             $ctx->check_cancel;
@@ -282,34 +324,66 @@ sub run ($self, $ctx, $params) {
         die "Nessuna traccia nei file OUT\n" unless $tracks;
         $ctx->check_cancel;
         $ctx->log(info => 'Caricamento CSV nella tabella battute (LOAD DATA LOCAL INFILE)', operation => 'load_hits');
-        $db->do("LOAD DATA LOCAL INFILE ? INTO TABLE battute FIELDS TERMINATED BY ','", undef, "$csv");
+        $db->do("LOAD DATA LOCAL INFILE ? INTO TABLE $battute_table FIELDS TERMINATED BY ',' "
+            . '(row_id,ora,flay_id,X_m,Y_m,Z_m,H_m,A_m,path,vel,hmod,validation,time_italy)', undef, "$csv");
         $ctx->log(info => 'Verifica warning MySQL dopo il caricamento', operation => 'check_mysql_warnings');
         my $warnings = $db->selectall_arrayref('SHOW WARNINGS');
         $ctx->log(warning => "Warning MySQL: codice $warnings->[0][1]; caricamento da annullare") if @$warnings;
         die "Caricamento battute rifiutato (duplicati o dati non validi), codice MySQL $warnings->[0][1]\n" if @$warnings;
-        $self->merge_midnight($ctx, $db, \%loaded_airports) if $params->{merge_midnight};
+        if ($session) {
+            my $merge = $params->{merge_midnight}
+                ? sub { $self->merge_midnight($ctx, $db, \%loaded_airports) } : undef;
+            $session->publish(\%loaded_airports, $merge);
+        } else {
+            $self->merge_midnight($ctx, $db, \%loaded_airports) if $params->{merge_midnight};
+            $ctx->check_cancel;
+            $ctx->log(info => 'Conferma transazione MySQL (commit)', operation => 'commit');
+            $db->commit;
+            $ctx->log(info => 'Transazione MySQL confermata', operation => 'commit_complete');
+        }
         $ctx->log(info => 'Unione a mezzanotte disabilitata') unless $params->{merge_midnight};
-        $ctx->check_cancel;
-        $ctx->log(info => 'Conferma transazione MySQL (commit)', operation => 'commit');
-        $db->commit;
-        $ctx->log(info => 'Transazione MySQL confermata', operation => 'commit_complete');
+        if ($session) {
+            $ctx->log(info => 'Chiusura connessione MySQL', operation => 'mysql_disconnect');
+            $db->disconnect;
+            $ctx->progress(100, 'Caricamento MySQL completato');
+        }
         1;
     };
     if (!$ok) {
         my $error = $@;
-        $ctx->log(error => 'Caricamento interrotto: annullamento transazione MySQL (rollback)', operation => 'rollback');
-        my $rolled_back = eval { $db->rollback; 1 };
-        if ($rolled_back) {
-            $ctx->log(info => 'Rollback MySQL completato; caricamento non confermato', operation => 'rollback_complete');
-        } else {
-            $ctx->log(critical => 'Rollback MySQL fallito: verificare il database prima di riprovare',
-                operation => 'rollback_failed');
+        my $mysql_error = $DBI::err;
+        if ($session) {
+            $self->logger->error('[ERROR] [exec=' . $ctx->execution_id . "] Caricamento MyISAM interrotto: $error");
+            my $recovered = eval { $session->abort; 1 };
+            $error = $@ unless $recovered;
+            my $disconnected = eval { $db->disconnect; 1 };
+            $ctx->log(critical => 'Chiusura connessione MySQL fallita dopo l\'errore') unless $disconnected;
+            if ($recovered && !ScriptManager::Exception->caught($error)) {
+                my $duplicate = defined $mysql_error && $mysql_error == 1062;
+                $error = ScriptManager::Exception->new(
+                    code => $duplicate ? 'mysql_duplicate' : 'mysql_load_failed',
+                    message => ($duplicate ? 'Duplicati rilevati nei file OUT o nel database. ' : 'Caricamento MyISAM fallito. ')
+                        . 'I nuovi dati non sono stati mantenuti; '
+                        . "consultare i log app/worker per l'esecuzione " . $ctx->execution_id,
+                );
+            }
+        } elsif ($transaction_started) {
+            $ctx->log(error => 'Caricamento interrotto: annullamento transazione MySQL (rollback)', operation => 'rollback');
+            my $rolled_back = eval { $db->rollback; 1 };
+            if ($rolled_back) {
+                $ctx->log(info => 'Rollback MySQL completato; caricamento non confermato', operation => 'rollback_complete');
+            } else {
+                $ctx->log(critical => 'Rollback MySQL fallito: verificare il database prima di riprovare',
+                    operation => 'rollback_failed');
+            }
         }
         die $error;
     }
-    $ctx->log(info => 'Chiusura connessione MySQL', operation => 'mysql_disconnect');
-    $db->disconnect;
-    $ctx->progress(100, 'Caricamento MySQL completato');
+    unless ($session) {
+        $ctx->log(info => 'Chiusura connessione MySQL', operation => 'mysql_disconnect');
+        $db->disconnect;
+        $ctx->progress(100, 'Caricamento MySQL completato');
+    }
     return {success => 1, message => "Caricate $tracks tracce e $hits battute", data => {tracks => $tracks, hits => $hits}};
 }
 

@@ -103,6 +103,37 @@ subtest 'logging levels and optional operation detail' => sub {
     }
 };
 
+subtest 'MySQL authentication failures appear as actionable ERROR events' => sub {
+    my $input = path(tempdir(CLEANUP => 1));
+    $input->child('LIML.OUT')->spew('connection fails before reading this file');
+    local $ENV{MRT_CONFIG_FILE} = $t->app->home->child('config', 'MRT.example.json')->to_string;
+    local $ENV{SCRIPT_MANAGER_OUT_ROOT} = "$input";
+    local $ENV{MYSQL_HOST} = 'mysql.example.invalid';
+    local $ENV{MYSQL_PORT} = 3306;
+    local $ENV{MYSQL_USER} = 'test';
+    local $ENV{MYSQL_PASSWORD} = 'hidden-test-password';
+    my $driver = DBI->install_driver('MariaDB');
+    no warnings qw(redefine once);
+    local *ScriptManager::Command::TestHandler::run = sub {
+        my (undef, $ctx) = @_;
+        ScriptManager::Command::CaricaDB->new(connect_db => sub {
+            $driver->set_err(1045, 'Access denied hidden-test-password /private/path');
+            die "Access denied hidden-test-password /private/path\n";
+        })->run($ctx, {radar => 'lin_2026', database => 'test_db', folder => '.'});
+    };
+    my $e = $repo->get_execution($service->submit(test_die => {})->{id});
+    $driver->set_err(undef, undef);
+    is $e->{status}, 'failed';
+    is $e->{error_code}, 'mysql_authentication';
+    is $repo->list_events($e->{id})->[-1]{level}, 'error', 'authentication error is not CRITICAL';
+    $t->get_ok("/executions/$e->{id}")->status_is(200)
+        ->content_like(qr/mysql_authentication: Autenticazione MySQL rifiutata/)
+        ->content_unlike(qr/hidden-test-password|\/private\/path/);
+    $t->get_ok("/api/executions/$e->{id}")->status_is(200)
+        ->json_is('/error_code' => 'mysql_authentication')
+        ->json_is('/error_message' => $e->{error_message});
+};
+
 subtest 'logging migration upgrades existing events' => sub {
     my $app = TestHelper::mojo()->app;
     my $migrations = Mojo::Pg::Migrations->new(pg => $app->pg)->name('script_manager')
@@ -116,6 +147,20 @@ subtest 'logging migration upgrades existing events' => sub {
     is $app->repo->list_events($id)->[-1]{level}, 'critical', 'upgraded schema accepts critical';
     $migrations->migrate(1);
     is $app->repo->list_events($id)->[-1]{level}, 'error', 'downgrade preserves events as errors';
+};
+
+subtest 'MyISAM recovery requirements remain visible as CRITICAL' => sub {
+    no warnings qw(redefine once);
+    local *ScriptManager::Command::TestHandler::run = sub {
+        ScriptManager::Exception->throw('mysql_recovery_required', 'Recupero MyISAM necessario; caricamenti bloccati');
+    };
+    my $e = $repo->get_execution($service->submit(test_die => {})->{id});
+    is $e->{status}, 'failed';
+    is $e->{error_code}, 'mysql_recovery_required';
+    is $repo->list_events($e->{id})->[-1]{level}, 'critical';
+    $t->get_ok("/executions/$e->{id}")->status_is(200)
+        ->text_is('tr.critical td:nth-child(2)' => 'CRITICAL')
+        ->content_like(qr/Recupero MyISAM necessario/);
 };
 
 subtest 'timeout' => sub {

@@ -116,6 +116,11 @@ services:
     profiles: ["test"]
     environment:
       TEST_ONLINE: postgresql://${APP_POSTGRES_USER}:${APP_POSTGRES_PASSWORD}@database:5432/${APP_POSTGRES_DB:-${POSTGRES_DB}}
+      TEST_MYSQL: ${TEST_MYSQL:-0}
+      MYSQL_HOST: ${MYSQL_HOST:-}
+      MYSQL_PORT: ${MYSQL_PORT:-3306}
+      MYSQL_USER: ${MYSQL_USER:-}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-}
     volumes:
       - .:/app
     depends_on:

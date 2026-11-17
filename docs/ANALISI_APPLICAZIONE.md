@@ -613,6 +613,40 @@ I nomi e i tipi definitivi devono essere approvati prima della generazione delle
 
 ---
 
+### 11.1 Caricamento radar su MySQL MyISAM
+
+Decisione: mantenere le tabelle legacy MyISAM. Il comando `CaricaDB` usa il
+servizio `ScriptManager::Service::MyISAMImport` per gestire staging, lock MySQL,
+journal e compensazione. Il percorso InnoDB continua a usare transazioni; una
+coppia di tabelle con motori misti viene rifiutata.
+
+Lo staging contiene soltanto i nuovi dati. La pubblicazione blocca le scritture
+sulle tabelle live, registra prima gli intervalli di ID e salva i record
+preesistenti che l'unione a mezzanotte potrebbe modificare. Gli errori gestiti
+vengono compensati sotto gli stessi lock, eliminando le nuove righe per ID e
+ripristinando i record salvati. I trigger sulle tabelle live non sono ammessi.
+Non viene modificato lo schema delle tabelle legacy.
+
+Le tabelle ausiliarie MySQL hanno il prefisso riservato
+`_sm_import_<UUID_senza_trattini>_` e i suffissi `flay`, `battute`, `undo_flay`,
+`undo_battute`, `state`. Il journal persiste fase e intervalli di ID; non e
+una transazione e non fornisce le garanzie di crash recovery di InnoDB.
+
+Dopo perdita dei lock o recupero fallito, le esecuzioni successive rilevano
+i journal incompleti e falliscono con `mysql_recovery_required` (CRITICAL),
+conservando il materiale di recupero. Il recupero dopo un arresto deve essere
+verificato dal DBA; solo allora la fase puo essere marcata `recovered`.
+Le tabelle di lavoro preparatorie o pubblicate con tutte le nuove righe
+presenti possono essere ripulite senza modificare i dati live.
+
+Comportamento verificabile con i test: staging senza scritture live, errori
+di pubblicazione parziale, compensazione di inserimenti e modifiche
+preesistenti, annullamento/timeout, esclusione concorrente, journal incompleti
+e ripartenza dopo recupero verificato. I test MySQL sono opt-in e usano un
+database isolato, mai il database operativo o i file radar reali.
+Limite esplicito: i crash fisici e la durabilita del server MyISAM richiedono
+verifiche del DBA e non sono equivalenti ai test di errore del processo.
+
 ## 12. Gestione dei processi esterni
 
 Quando non è possibile incorporare la logica in un modulo Perl, utilizzare un servizio dedicato all'esecuzione controllata.

@@ -41,9 +41,10 @@ use ScriptManager::Service::ProcedureRegistry;
     has rolled_back => 0;
     has rollback_fails => 0;
     has csv => '';
+    has engines => sub { [['flay', 'InnoDB'], ['battute', 'InnoDB']] };
     sub selectall_arrayref ($self, $sql, @values) {
         push @{$self->queries}, [$sql, \@values];
-        return [['flay', 'InnoDB'], ['battute', 'InnoDB']] if $sql =~ /information_schema/;
+        return $self->engines if $sql =~ /information_schema/;
         return $self->warnings if $sql eq 'SHOW WARNINGS';
         die "Unexpected query $sql";
     }
@@ -154,6 +155,17 @@ subtest 'importazione e opzione mezzanotte' => sub {
     }
 };
 
+subtest 'motori misti o tabelle mancanti rifiutati prima di scrivere' => sub {
+    for my $engines ([['flay', 'MyISAM'], ['battute', 'InnoDB']], [['flay', 'MyISAM']]) {
+        my $db = LoaderDatabase->new(engines => $engines);
+        my $loader = ScriptManager::Command::CaricaDB->new(connect_db => sub (@args) { $db });
+        eval { $loader->run(LoaderContext->new, $params) };
+        ok(ScriptManager::Exception->caught($@, 'mysql_schema'));
+        ok !$db->committed && !$db->rolled_back, 'nessuna transazione iniziata';
+        ok !grep { $_->[0] =~ /\A(?:INSERT|UPDATE|LOAD|DELETE)/ } @{$db->queries};
+    }
+};
+
 subtest 'sottocartella e dettaglio delle operazioni' => sub {
     my $nested = $input->child('2026', 'novembre')->make_path;
     $nested->child('LIML.OUT')->spew("$header$hit\n");
@@ -167,6 +179,38 @@ subtest 'sottocartella e dettaglio delle operazioni' => sub {
     like $messages, qr/Validazione e inserimento traccia/, 'operazione traccia registrata';
     like $messages, qr/Conversione e scrittura battuta/, 'operazione battuta registrata';
     ok $db->committed, 'logging non altera il caricamento';
+};
+
+subtest 'errori di connessione MySQL classificati senza dettagli sensibili' => sub {
+    my $driver = DBI->install_driver('MariaDB');
+    for my $case ([1045, 'mysql_authentication'], [1698, 'mysql_authentication'],
+                  [1044, 'mysql_database_access'], [1049, 'mysql_database_missing'],
+                  [2003, 'mysql_connect']) {
+        for my $throws (0, 1) {
+            my $loader = ScriptManager::Command::CaricaDB->new(connect_db => sub (@args) {
+                $driver->set_err($case->[0], 'test-not-a-secret /private/internal/path');
+                die "test-not-a-secret /private/internal/path\n" if $throws;
+                return undef;
+            });
+            eval { $loader->run(LoaderContext->new, $params) };
+            my $error = $@;
+            $driver->set_err(undef, undef);
+            ok(ScriptManager::Exception->caught($error, $case->[1]), "MySQL $case->[0] classificato (RaiseError=$throws)");
+            like "$error", qr/codice MySQL $case->[0]/, 'codice diagnostico conservato';
+            unlike "$error", qr/test-not-a-secret|\/private\/internal/, 'dettagli interni omessi';
+            like "$error", qr/MYSQL_USER.*MYSQL_PASSWORD.*autorizzato/s, 'indicazioni su credenziali e host'
+                if $case->[1] eq 'mysql_authentication';
+        }
+    }
+
+    my $timeout = ScriptManager::Exception->new(code => 'timed_out', message => 'Timeout connessione');
+    my $loader = ScriptManager::Command::CaricaDB->new(connect_db => sub (@args) { die $timeout });
+    eval { $loader->run(LoaderContext->new, $params) };
+    is $@, $timeout, 'timeout non trasformato in errore di autenticazione';
+
+    $loader = ScriptManager::Command::CaricaDB->new(connect_db => sub (@args) { die "unexpected failure\n" });
+    eval { $loader->run(LoaderContext->new, $params) };
+    like "$@", qr/unexpected failure/, 'errore non DBI preservato per la diagnosi interna';
 };
 
 subtest 'rollback fallito produce un evento CRITICAL' => sub {
