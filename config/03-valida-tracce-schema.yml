@@ -1,0 +1,15 @@
+parameter_schema:
+  type: object
+  required: [database, airport]
+  properties:
+    database:
+      type: string
+      title: Database MySQL di destinazione
+      pattern: '^[A-Za-z0-9_]{1,64}$'
+      maxLength: 64
+      x-order: 1
+    airport:
+      type: string
+      title: Aeroporto
+      x-widget: radio
+      x-order: 2

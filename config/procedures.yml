@@ -15,6 +15,20 @@ procedures:
     exclusive: true
     retention_days: 7
     parameter_schema_file: 02-carica-variants.yml
+  - code: valida_tracce
+    name: 03-valida_tracce
+    description: >-
+      Valida le tracce (flay) nel database verificando che abbiano almeno 4 battute
+      e almeno una battuta entro 10 km dal centro dell'aeroporto e 1000 m di quota.
+      Tracce valide ricevono validation_fl='Y'; non valide ricevono validation_fl='N'
+      e tutte le loro battute sono marcate con validation='A'.
+    enabled: true
+    handler_class: ScriptManager::Command::ValidaTracce
+    execution_mode: async
+    timeout_seconds: 3600
+    exclusive: true
+    retention_days: 7
+    parameter_schema_file: 03-valida-tracce-schema.yml
   - code: example_echo
     name: Esempio - eco con file di output
     description: >-
