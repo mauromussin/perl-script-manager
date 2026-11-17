@@ -645,8 +645,11 @@ La prima occorrenza segue l'ordine dei file e delle righe; le altre vengono
 conservate separatamente anche se identiche. Le riesecuzioni di import gia
 completati non sono idempotenti e aggiungono ulteriori battute doppie.
 Il merge a mezzanotte, come nel legacy, modifica solo le battute principali.
-Restano invece i controlli del nuovo parser su battute ripetute nello stesso
-record: non viene riprodotto il filtro legacy delle sole ripetizioni adiacenti.
+Dentro lo stesso record OUT, i campioni di 24 caratteri identici ripetuti
+vengono ignorati dopo la prima occorrenza, anche se non adiacenti, con WARNING
+di origine/posizione e conteggio `skipped_hits`. I contatori delle battute
+caricate escludono gli scarti. Non si deduplicano record OUT diversi e
+restano bloccanti campioni diversi che collidono sulla chiave convertita.
 
 Lo staging contiene soltanto i nuovi dati. La pubblicazione blocca le scritture
 sulle tabelle live, registra prima gli intervalli di ID e salva i record

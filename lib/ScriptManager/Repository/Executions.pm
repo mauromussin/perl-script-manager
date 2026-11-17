@@ -153,6 +153,13 @@ sub list_events ($self, $id) {
         $id)->expand->hashes->to_array;
 }
 
+sub latest_events ($self, $id) {
+    return $self->pg->db->query(
+        'select id, level, event_type, message, metadata, created_at from execution_events '
+        . 'where execution_id = ? order by created_at desc, id desc limit 25',
+        $id)->expand->hashes->to_array;
+}
+
 # ---- artifacts -----------------------------------------------------------
 
 sub add_artifact ($self, $id, %a) {

@@ -60,7 +60,7 @@ sub show ($c) {
     my $final = $c->is_final($exec->{status});
     return $c->render(
         execution => $exec,
-        events    => $c->repo->list_events($exec->{id}),
+        events    => $c->repo->latest_events($exec->{id}),
         artifacts => $c->repo->list_artifacts($exec->{id}),
         refresh   => $final ? 0 : 2,
     );

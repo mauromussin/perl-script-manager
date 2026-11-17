@@ -41,6 +41,31 @@ subtest 'start and follow an execution' => sub {
         ->text_is('tbody tr td', 'Nessuna esecuzione trovata.');
 };
 
+subtest 'execution page shows only the latest 25 events in reverse chronological order' => sub {
+    my $repo = $t->app->repo;
+    my $id = $t->app->execution_service->submit(test_sum => {a => 1, b => 2})->{id};
+    my $before = scalar @{$repo->list_events($id)};
+    $t->app->pg->db->query(q{
+        insert into execution_events (execution_id,level,message,created_at)
+        select ?, 'info', 'test-log-' || lpad(n::text,2,'0'),
+            timestamp '2100-01-01 00:00:00' +
+                case when n <= 2 then interval '1 day' else n * interval '1 second' end
+        from generate_series(1,30) as n order by n
+    }, $id);
+    my ($other_id) = $location =~ m{/executions/([0-9a-f-]+)};
+    $repo->add_event($other_id, 'info', 'other-execution-only');
+    $t->get_ok("/executions/$id")->status_is(200);
+    my $rows = $t->tx->res->dom->find('table.log tbody tr');
+    is $rows->size, 25, 'exactly 25 rows, not the first 25';
+    is_deeply $rows->map(sub { $_->at('td:last-child')->text })->to_array,
+        [map { sprintf 'test-log-%02d', $_ } (2, 1, reverse 8 .. 30)],
+        'timestamp descending, then ID descending for equal timestamps';
+    $t->content_unlike(qr/other-execution-only/);
+    is scalar @{$repo->list_events($id)}, $before + 30, 'all historical events remain stored';
+    $t->get_ok("/api/executions/$id")->status_is(200);
+    is scalar @{$t->tx->res->json->{events}}, $before + 30, 'API continues returning the full history';
+};
+
 subtest 're-run prefills the form with a new record' => sub {
     my ($id) = $location =~ m{/executions/([0-9a-f-]+)};
     $t->get_ok("/procedures/test_sum?from=$id")->status_is(200)->element_exists('input[name=a][value="1"]');

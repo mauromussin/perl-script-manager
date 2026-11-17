@@ -201,9 +201,15 @@ o righe prive del terminatore previsto.
 Il caricatore non crea o modifica questa tabella. Record identici sono
 comunque archiviati come occorrenze separate: **ripetere un caricamento gia
 completato aggiunge altre battute in `battute_doppie`**, non e un'operazione
-idempotente. Rimangono attivi i controlli del nuovo caricatore su input
-malformati, battute ripetute nello stesso record e warning SQL; non viene
-replicato il filtro legacy delle sole battute consecutive.
+idempotente. Dentro ogni record OUT, invece, le ripetizioni identiche dello
+stesso campione di 24 caratteri vengono ignorate, anche se non consecutive,
+mantenendo la prima occorrenza. Ogni scarto produce un WARNING con file,
+riga, volo, data, ora della battuta e posizioni della ripetizione e della
+prima occorrenza. Il riepilogo e `skipped_hits` riportano gli scarti; `hits`
+e `duplicate_hits` contano solo le battute effettivamente caricate.
+Questa deduplica vale sia per `battute` sia per `battute_doppie`, ma non
+confronta record OUT diversi. Campioni non identici che producono la stessa
+chiave convertita, input malformati e warning SQL restano bloccanti.
 Come nel legacy, l'unione a mezzanotte sposta solo `battute`, non
 `battute_doppie`, che conserva il riferimento alla traccia individuata.
 
@@ -326,6 +332,10 @@ nuovi caricamenti. `mysql_already_published` avverte che l'errore e avvenuto
 dopo la pubblicazione: non rieseguire senza verifica.
 
 ### Livelli e dettaglio operativo
+
+La pagina di dettaglio dell'esecuzione mostra solo gli ultimi 25 eventi,
+ordinati per data/ora decrescente (a parita, ID decrescente). Lo storico
+completo resta conservato nel database e disponibile nell'API.
 
 I log dell'esecuzione e quelli Docker distinguono `INFO`, `WARNING`, `ERROR`
 e `CRITICAL` (l'API e il database conservano i codici in minuscolo).

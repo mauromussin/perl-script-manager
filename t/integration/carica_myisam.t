@@ -227,7 +227,7 @@ subtest 'tracce senza battute non bloccano MyISAM e non attivano da sole il merg
         ok $result->{success};
         is_deeply $result->{data}, {
             tracks => $valid, hits => $valid, duplicate_tracks => 0, duplicate_hits => 0, skipped_tracks => 2,
-            repaired_tracks => 0,
+            repaired_tracks => 0, skipped_hits => 0,
         };
         is scalar @{rows('flay')}, 2 + $valid;
         is scalar @{rows('battute')}, 1 + $valid;
@@ -241,6 +241,25 @@ subtest 'tracce senza battute non bloccano MyISAM e non attivano da sole il merg
     }
 };
 
+subtest 'battute identiche ripetute non bloccano ne staging principale ne doppie' => sub {
+    reset_tables();
+    my $line = record();
+    my $header = substr($line, 0, 34);
+    my $sample = substr($line, 34, 24);
+    $line = $header . ($sample x 3) . "\n";
+    $input->child('LIML.OUT')->spew($line . $line);
+    my $ctx = context();
+    my $result = loader()->run($ctx, $params);
+    ok $result->{success};
+    is $result->{data}{hits}, 2, 'una battuta valida per ogni record OUT';
+    is $result->{data}{skipped_hits}, 4;
+    is scalar @{rows('flay')}, 1;
+    is scalar @{rows('battute')}, 1;
+    is scalar @{rows('battute_doppie')}, 1, 'deduplica solo dentro il record, non tra occorrenze diverse';
+    is scalar(grep { $_->{level} eq 'warning' && ($_->{operation} // '') eq 'skip_duplicate_hit' } @{$ctx->events}), 4;
+    is_deeply work_tables(), [];
+};
+
 subtest 'duplicati nello stesso OUT e tra OUT conservano le battute separatamente' => sub {
     reset_tables();
     my $different = record();
@@ -251,7 +270,7 @@ subtest 'duplicati nello stesso OUT e tra OUT conservano le battute separatament
     my $result = loader()->run($ctx, $params);
     $input->child('LIML_2.OUT')->remove;
     ok $result->{success};
-    is_deeply $result->{data}, {tracks => 2, hits => 4, duplicate_tracks => 2, duplicate_hits => 2, skipped_tracks => 0, repaired_tracks => 0};
+    is_deeply $result->{data}, {tracks => 2, hits => 4, duplicate_tracks => 2, duplicate_hits => 2, skipped_tracks => 0, repaired_tracks => 0, skipped_hits => 0};
     is scalar @{rows('flay')}, 2, 'nessuna traccia aggiuntiva o carattere spia';
     is rows('flay')->[0][1], 'ABC1234', 'nome volo originale preservato';
     is scalar @{rows('battute')}, 2, 'solo le prime occorrenze in battute';
@@ -276,7 +295,7 @@ subtest 'duplicati live riusano ID e metadati senza modificare battute preesiste
     $input->child('LIML.OUT')->spew(record('ZZZ1234') . record('ABC1234') . record('ZZZ1234'));
     my $result = loader()->run(context(), $params);
     ok $result->{success};
-    is_deeply $result->{data}, {tracks => 1, hits => 3, duplicate_tracks => 2, duplicate_hits => 2, skipped_tracks => 0, repaired_tracks => 0};
+    is_deeply $result->{data}, {tracks => 1, hits => 3, duplicate_tracks => 2, duplicate_hits => 2, skipped_tracks => 0, repaired_tracks => 0, skipped_hits => 0};
     is_deeply rows('flay')->[0], $before->[0], 'validazione e metadati preesistenti intatti';
     is_deeply rows('battute')->[0], $hits->[0];
     is scalar @{rows('flay')}, 2;
@@ -287,7 +306,7 @@ subtest 'duplicati live riusano ID e metadati senza modificare battute preesiste
     cmp_ok rows('battute_doppie')->[-2][0], '>', 300, 'AUTO_INCREMENT doppie rispettato';
     $input->child('LIML.OUT')->spew(record('ZZZ1234'));
     $result = loader()->run(context(), $params);
-    is_deeply $result->{data}, {tracks => 0, hits => 1, duplicate_tracks => 1, duplicate_hits => 1, skipped_tracks => 0, repaired_tracks => 0},
+    is_deeply $result->{data}, {tracks => 0, hits => 1, duplicate_tracks => 1, duplicate_hits => 1, skipped_tracks => 0, repaired_tracks => 0, skipped_hits => 0},
         'caricamento composto soltanto da tracce gia presenti';
     is_deeply work_tables(), [];
 };
@@ -316,7 +335,7 @@ subtest 'tracce esistenti senza battute completano solo i campi vuoti e ricevono
         my $result = $load->run(context(), $params);
         ok $result->{success}, "$engine: caricamento riuscito";
         is_deeply $result->{data}, {
-            tracks => 0, hits => 5, duplicate_tracks => 2, duplicate_hits => 2, skipped_tracks => 0, repaired_tracks => 3,
+            tracks => 0, hits => 5, duplicate_tracks => 2, duplicate_hits => 2, skipped_tracks => 0, repaired_tracks => 3, skipped_hits => 0,
         };
         like $result->{message}, qr/3 tracce preesistenti senza battute completate/;
         my $after = rows('flay');
@@ -444,7 +463,7 @@ subtest 'InnoDB conferma o annulla anche le battute doppie nella stessa transazi
             $db->disconnect;
         } else {
             ok $result->{success};
-            is_deeply $result->{data}, {tracks => 1, hits => 3, duplicate_tracks => 2, duplicate_hits => 2, skipped_tracks => 0, repaired_tracks => 0};
+            is_deeply $result->{data}, {tracks => 1, hits => 3, duplicate_tracks => 2, duplicate_hits => 2, skipped_tracks => 0, repaired_tracks => 0, skipped_hits => 0};
             is scalar @{rows('flay')}, 2;
             is scalar @{rows('battute')}, 2;
             is scalar @{rows('battute_doppie')}, 2;

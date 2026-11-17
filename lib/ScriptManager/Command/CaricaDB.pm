@@ -305,6 +305,7 @@ sub run ($self, $ctx, $params) {
     my ($duplicate_tracks, $duplicate_hits) = (0, 0);
     my $repaired_tracks = 0;
     my $skipped_tracks = 0;
+    my $skipped_hits = 0;
     my %loaded_airports;
     $ctx->log(info => "Radar $radar->{id}, revisione " . ($radar->{revision_date} // 'non documentata')
         . ", origine $radar->{x_m}/$radar->{y_m}; record duplicati destinati a battute_doppie");
@@ -378,9 +379,21 @@ sub run ($self, $ctx, $params) {
                 my %seen_hits;
                 for (my $offset = 34; $offset + 24 < length($line); $offset += 24) {
                     $ctx->debug_operation("Conversione e scrittura battuta: traccia $track_id, offset $offset");
-                    my $hit = __PACKAGE__->hit(substr($line, $offset, 24), $track->[1], $radar);
-                    die "Battuta duplicata nella traccia $track->[0]\n"
-                        if $seen_hits{join(',', @$hit[0 .. 3])}++;
+                    my $sample = substr($line, $offset, 24);
+                    my $hit = __PACKAGE__->hit($sample, $track->[1], $radar);
+                    my $key = join(',', @$hit[0 .. 3]);
+                    my $index = ($offset - 34) / 24 + 1;
+                    if (my $previous = $seen_hits{$key}) {
+                        die "Battuta duplicata con contenuto diverso nella traccia $track->[0]\n"
+                            unless $sample eq $previous->{sample};
+                        $skipped_hits++;
+                        $ctx->log(warning => "Battuta identica ripetuta ignorata: $entry->{file}, riga $line_number; "
+                            . "volo $track->[0], data $track->[1], ora battuta $hit->[0]; "
+                            . "battuta $index, prima occorrenza $previous->{index}",
+                            operation => 'skip_duplicate_hit', track_id => $track_id);
+                        next;
+                    }
+                    $seen_hits{$key} = {sample => $sample, index => $index};
                     my @fields = (undef, $hit->[0], $track_id, $hit->[1], $hit->[2],
                         $hit->[3] > 0 ? $hit->[3] : undef, $hit->[3],
                         (undef) x 5, $hit->[4]);
@@ -478,10 +491,12 @@ sub run ($self, $ctx, $params) {
     $message .= "; $repaired_tracks tracce preesistenti senza battute completate" if $repaired_tracks;
     $message .= "; $duplicate_tracks record duplicati, $duplicate_hits battute in battute_doppie" if $duplicate_tracks;
     $message .= "; $skipped_tracks tracce senza battute ignorate" if $skipped_tracks;
+    $message .= "; $skipped_hits battute identiche ripetute ignorate" if $skipped_hits;
     return {success => 1, message => $message, data => {
         tracks => $tracks, hits => $hits, duplicate_tracks => $duplicate_tracks, duplicate_hits => $duplicate_hits,
         skipped_tracks => $skipped_tracks,
         repaired_tracks => $repaired_tracks,
+        skipped_hits => $skipped_hits,
     }};
 }
 

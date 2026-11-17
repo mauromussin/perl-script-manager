@@ -53,7 +53,7 @@
 </ul>
 % }
 
-<h2>Log</h2>
+<h2>Log (ultimi 25 eventi)</h2>
 <table class="log">
   <tbody>
 % for my $ev (@$events) {

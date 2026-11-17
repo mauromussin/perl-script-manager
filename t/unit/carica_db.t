@@ -278,12 +278,34 @@ subtest 'duplicati e warning annullano il caricamento' => sub {
         ok $db->rolled_back, 'rollback eseguito';
         ok !$db->committed, 'nessun commit';
     }
-    $input->child('LIML_20260202.OUT')->spew("$header$hit$hit\n");
+};
+
+subtest 'battute identiche ripetute ignorate con warning; conflitti non identici ancora bloccanti' => sub {
+    my $other_hit = sprintf '%06d%06d%06d%s', 128, -64, 100, '120001';
+    $input->child('LIML_20260202.OUT')->spew("$header$hit$hit$other_hit$hit\n");
     my $db = LoaderDatabase->new;
+    my $ctx = LoaderContext->new;
     my $loader = ScriptManager::Command::CaricaDB->new(connect_db => sub (@args) { $db });
+    my $result = $loader->run($ctx, $params);
+    ok $result->{success};
+    ok $db->committed && !$db->rolled_back, 'il caricamento prosegue';
+    is $result->{data}{hits}, 2, 'battute uniche contate e caricate';
+    is $result->{data}{skipped_hits}, 2, 'ripetizioni adiacenti e non adiacenti ignorate';
+    is scalar(split /\n/, $db->csv), 2, 'CSV privo di ripetizioni';
+    my @warnings = grep { $_->[0] eq 'warning' } @{$ctx->events};
+    is scalar @warnings, 2;
+    like $warnings[0][1], qr/\Q$input\E.*riga 1.*ABC1234.*120000.*battuta 2, prima occorrenza 1/,
+        'warning con origine, traccia e posizione';
+    like $warnings[1][1], qr/battuta 4, prima occorrenza 1/, 'mantiene il riferimento alla prima battuta';
+    like $result->{message}, qr/2 battute identiche ripetute ignorate/, 'scarti visibili nel riepilogo';
+
+    my $different = $hit;
+    substr($different, 0, 6, '    64');
+    $input->child('LIML_20260202.OUT')->spew("$header$hit$different\n");
+    $db = LoaderDatabase->new;
     eval { $loader->run(LoaderContext->new, $params) };
-    like "$@", qr/Battuta duplicata/, 'battute ripetute rifiutate anche senza vincolo SQL';
-    ok $db->rolled_back, 'rollback della traccia con battute ripetute';
+    like "$@", qr/Battuta duplicata con contenuto diverso/, 'non ignora campioni diversi con la stessa chiave convertita';
+    ok $db->rolled_back && !$db->committed, 'conflitto non identico ancora bloccante';
 };
 
 done_testing;
