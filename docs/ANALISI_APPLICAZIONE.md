@@ -617,8 +617,22 @@ I nomi e i tipi definitivi devono essere approvati prima della generazione delle
 
 Decisione: mantenere le tabelle legacy MyISAM. Il comando `CaricaDB` usa il
 servizio `ScriptManager::Service::MyISAMImport` per gestire staging, lock MySQL,
-journal e compensazione. Il percorso InnoDB continua a usare transazioni; una
-coppia di tabelle con motori misti viene rifiutata.
+journal e compensazione. Il percorso InnoDB continua a usare transazioni;
+`flay`, `battute` e `battute_doppie` devono esistere e avere lo stesso motore.
+
+Decisione sui duplicati: riprendere il routing del legacy LIN 2026, verificato
+nel ramo 1062 dello script, senza modificarlo. Per la stessa chiave
+`(flay, data, ora)` si riusa la traccia individuata e si destinano le battute
+dei record successivi a `battute_doppie`. Non si modifica il nome del volo e
+non si sovrascrivono i metadati della prima traccia. La regola include tracce
+gia presenti nel database; MyISAM le risolve soltanto sotto lock durante la
+pubblicazione. Una mappa associa gli ID locali a quelli preesistenti.
+La prima occorrenza segue l'ordine dei file e delle righe; le altre vengono
+conservate separatamente anche se identiche. Le riesecuzioni di import gia
+completati non sono idempotenti e aggiungono ulteriori battute doppie.
+Il merge a mezzanotte, come nel legacy, modifica solo le battute principali.
+Restano invece i controlli del nuovo parser su battute ripetute nello stesso
+record: non viene riprodotto il filtro legacy delle sole ripetizioni adiacenti.
 
 Lo staging contiene soltanto i nuovi dati. La pubblicazione blocca le scritture
 sulle tabelle live, registra prima gli intervalli di ID e salva i record
@@ -628,9 +642,13 @@ ripristinando i record salvati. I trigger sulle tabelle live non sono ammessi.
 Non viene modificato lo schema delle tabelle legacy.
 
 Le tabelle ausiliarie MySQL hanno il prefisso riservato
-`_sm_import_<UUID_senza_trattini>_` e i suffissi `flay`, `battute`, `undo_flay`,
-`undo_battute`, `state`. Il journal persiste fase e intervalli di ID; non e
-una transazione e non fornisce le garanzie di crash recovery di InnoDB.
+`_sm_import_<UUID_senza_trattini>_` e i suffissi `flay`, `battute`,
+`battute_doppie`, `track_map`, `undo_flay`, `undo_battute`, `state`.
+Il journal persiste fase, intervalli di ID e conteggi, ammettendo intervalli
+vuoti e ID non contigui dopo il riuso delle tracce. La compensazione rimuove
+anche le nuove battute doppie, senza toccare quelle preesistenti.
+I journal precedenti a due tabelle restano leggibili. Non e una transazione
+e non fornisce le garanzie di crash recovery di InnoDB.
 
 Dopo perdita dei lock o recupero fallito, le esecuzioni successive rilevano
 i journal incompleti e falliscono con `mysql_recovery_required` (CRITICAL),
@@ -642,7 +660,9 @@ presenti possono essere ripulite senza modificare i dati live.
 Comportamento verificabile con i test: staging senza scritture live, errori
 di pubblicazione parziale, compensazione di inserimenti e modifiche
 preesistenti, annullamento/timeout, esclusione concorrente, journal incompleti
-e ripartenza dopo recupero verificato. I test MySQL sono opt-in e usano un
+e ripartenza dopo recupero verificato, duplicati nello stesso OUT/tra file/nel
+database, compensazione delle doppie e commit/rollback InnoDB su tre tabelle.
+I test MySQL sono opt-in e usano un
 database isolato, mai il database operativo o i file radar reali.
 Limite esplicito: i crash fisici e la durabilita del server MyISAM richiedono
 verifiche del DBA e non sono equivalenti ai test di errore del processo.

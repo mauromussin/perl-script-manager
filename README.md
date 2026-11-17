@@ -147,9 +147,39 @@ Remove-Item Env:\TEST_MYSQL
 
 ## Caricamenti MyISAM e gestione dei fallimenti
 
-`flay` e `battute` possono essere entrambe MyISAM oppure entrambe InnoDB.
+`flay`, `battute` e `battute_doppie` devono esistere ed essere tutte MyISAM oppure tutte InnoDB.
 I motori misti non sono supportati. InnoDB mantiene la gestione transazionale;
 MyISAM usa staging e compensazione, senza convertire le tabelle legacy.
+
+### Record OUT con la stessa traccia
+
+Come nel caricatore legacy LIN 2026, la chiave della traccia e
+`(flay, data, ora)`. La prima occorrenza crea una traccia in `flay` e carica
+le battute in `battute`. Le occorrenze successive riusano il suo `row_id` e
+destinano tutte le proprie battute a `battute_doppie`, senza cambiare il
+nome del volo, sostituire i metadati o unire automaticamente le osservazioni.
+La regola vale nello stesso OUT, tra i file selezionati e per tracce gia
+presenti nel database. Una traccia preesistente mantiene anche i suoi flag
+di validazione; l'eventuale unione a mezzanotte resta una fase separata.
+
+Il primo record dipende dall'ordine di lettura: file ordinati per percorso
+e righe nell'ordine originale. I duplicati nello staging producono WARNING
+con file completo, riga e chiave; quelli individuati nel database durante
+la pubblicazione MyISAM producono un WARNING riepilogativo.
+Il risultato contiene `tracks` (nuove tracce), `hits` (battute complessive),
+`duplicate_tracks` (record associati a una traccia gia individuata) e
+`duplicate_hits` (battute destinate a `battute_doppie`).
+
+`battute_doppie` deve accettare le stesse 13 colonne di caricamento di
+`battute`; nello schema operativo verificato non ha il vincolo `u_battuta`.
+Il caricatore non crea o modifica questa tabella. Record identici sono
+comunque archiviati come occorrenze separate: **ripetere un caricamento gia
+completato aggiunge altre battute in `battute_doppie`**, non e un'operazione
+idempotente. Rimangono attivi i controlli del nuovo caricatore su input
+malformati, battute ripetute nello stesso record e warning SQL; non viene
+replicato il filtro legacy delle sole battute consecutive.
+Come nel legacy, l'unione a mezzanotte sposta solo `battute`, non
+`battute_doppie`, che conserva il riferimento alla traccia individuata.
 
 Per MyISAM:
 
@@ -159,9 +189,12 @@ Per MyISAM:
    mantenendo anche i vincoli univoci delle tabelle originali. Le battute usano
    `LOAD DATA LOCAL INFILE` con una lista esplicita di colonne. Qualunque warning
    rifiuta il caricamento. In questa fase i dati live non vengono modificati.
-3. La pubblicazione acquisisce `LOCK TABLES ... WRITE` su entrambe le tabelle:
+3. La pubblicazione acquisisce `LOCK TABLES ... WRITE` sulle tre tabelle:
    gli altri client devono attendere. Gli identificatori vengono rimappati e
-   gli intervalli delle nuove righe sono registrati prima delle scritture live.
+   gli intervalli e i conteggi delle nuove righe sono registrati prima delle
+   scritture live. Sotto gli stessi lock vengono individuate le tracce gia
+   presenti: le loro battute passano dallo staging normale a quello delle
+   doppie e ricevono il `flay_id` esistente, senza inserire una nuova traccia.
 4. Se richiesta, l'unione a mezzanotte mantiene il comportamento esistente,
    comprese le tracce preesistenti. Prima delle modifiche ne vengono salvati
    i record e le battute interessate, senza copiare tutto lo storico.
@@ -170,16 +203,22 @@ Per MyISAM:
    `row_id` e ripristino dei record preesistenti salvati. Non viene usato un
    falso rollback MyISAM. I contatori AUTO_INCREMENT non vengono riavvolti.
 
-Le tabelle di lavoro persistenti hanno nomi riservati
-`_sm_import_<UUID_senza_trattini>_{flay,battute,undo_flay,undo_battute,state}`.
-Il journal `state` contiene la fase e gli intervalli di ID. Normalmente vengono
+Le tabelle di lavoro persistenti hanno il prefisso riservato
+`_sm_import_<UUID_senza_trattini>_` e i suffissi `flay`, `battute`,
+`battute_doppie`, `track_map`, `undo_flay`, `undo_battute`, `state`.
+La mappa collega gli ID di staging alle tracce preesistenti. Il journal `state`
+contiene fase, intervalli di ID e conteggi (anche zero, se non ci sono nuove
+righe per una tabella). Normalmente le tabelle di lavoro vengono
 rimosse al termine. Se fallisce soltanto la pulizia dopo una pubblicazione
 riuscita, l'esecuzione resta completata con un WARNING; la pulizia viene ripresa
 al caricamento successivo, dopo verifica della presenza delle nuove righe.
+Restano leggibili anche i journal della precedente versione a due tabelle.
+Non tornare a quella versione lasciando journal della nuova versione pendenti:
+non riconoscerebbe tutte le tabelle e gli intervalli di recupero.
 
 L'account applicativo necessita di `SELECT, INSERT, UPDATE, DELETE, CREATE,
 DROP, ALTER, LOCK TABLES, TRIGGER` sul database scelto. Non servono privilegi globali
-amministrativi. Non sono consentiti trigger su `flay` o `battute`: gli eventuali
+amministrativi. Non sono consentiti trigger su `flay`, `battute` o `battute_doppie`: gli eventuali
 effetti su altre tabelle non sarebbero compensabili. Il privilegio diretto
 `TRIGGER` serve a renderli visibili nei metadati; senza di esso il controllo
 potrebbe scambiare trigger nascosti per trigger assenti. Non e richiesto SUPER
@@ -247,8 +286,11 @@ dell'account sul server MySQL per l'host client. Preferire un account dedicato
 con i soli permessi necessari invece di abilitare accessi remoti generici a root.
 Dopo cambiamenti a `.env`, ricreare app e worker.
 
-Per MyISAM, `mysql_duplicate` segnala duplicati e `mysql_load_failed` un errore
-di caricamento gestito senza mantenere le nuove righe; la causa tecnica e nei
+Per MyISAM, i record con chiave traccia ripetuta vengono gestiti in
+`battute_doppie`, non sono di per se un errore `mysql_duplicate`. Quest'ultimo
+indica un conflitto univoco non risolvibile con tale regola (per esempio un
+ulteriore vincolo SQL sulle battute); `mysql_load_failed` indica un altro errore
+di caricamento gestito senza mantenere le nuove righe. La causa tecnica e nei
 log app/worker. `mysql_recovery_required` conserva journal/backup e blocca
 nuovi caricamenti. `mysql_already_published` avverte che l'errore e avvenuto
 dopo la pubblicazione: non rieseguire senza verifica.

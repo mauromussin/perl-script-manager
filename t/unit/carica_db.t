@@ -29,6 +29,7 @@ use ScriptManager::Service::ProcedureRegistry;
     }
     sub fetchrow_arrayref ($self) { return undef }
     sub fetchall_arrayref ($self) { return [] }
+    sub err ($self) { return 0 }
 }
 {
     package LoaderDatabase;
@@ -41,7 +42,7 @@ use ScriptManager::Service::ProcedureRegistry;
     has rolled_back => 0;
     has rollback_fails => 0;
     has csv => '';
-    has engines => sub { [['flay', 'InnoDB'], ['battute', 'InnoDB']] };
+    has engines => sub { [map { [$_, 'InnoDB'] } qw(flay battute battute_doppie)] };
     sub selectall_arrayref ($self, $sql, @values) {
         push @{$self->queries}, [$sql, \@values];
         return $self->engines if $sql =~ /information_schema/;
@@ -156,7 +157,10 @@ subtest 'importazione e opzione mezzanotte' => sub {
 };
 
 subtest 'motori misti o tabelle mancanti rifiutati prima di scrivere' => sub {
-    for my $engines ([['flay', 'MyISAM'], ['battute', 'InnoDB']], [['flay', 'MyISAM']]) {
+    for my $engines ([['flay', 'MyISAM'], ['battute', 'InnoDB']],
+                     [['flay', 'MyISAM']],
+                     [['flay', 'MyISAM'], ['battute', 'MyISAM']],
+                     [['flay', 'InnoDB'], ['battute', 'InnoDB'], ['battute_doppie', 'MyISAM']]) {
         my $db = LoaderDatabase->new(engines => $engines);
         my $loader = ScriptManager::Command::CaricaDB->new(connect_db => sub (@args) { $db });
         eval { $loader->run(LoaderContext->new, $params) };

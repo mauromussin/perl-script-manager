@@ -13,15 +13,19 @@ has owned => 0;
 has locked => 0;
 has publishing => 0;
 has published => 0;
+has reused_tracks => 0;
+has diverted_hits => 0;
 has columns => sub { {} };
 has schemas => sub { {} };
 has bounds => sub { {} };
+has counts => sub { {} };
 has names => sub ($self) {
     my $id = $self->ctx->execution_id // '';
     ScriptManager::Exception->throw('mysql_import_id', 'Identificatore esecuzione non valido')
         unless $id =~ /\A[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\z/i;
     $id =~ s/-//g;
-    return {map { $_ => '_sm_import_' . lc($id) . "_$_" } qw(flay battute undo_flay undo_battute state)};
+    return {map { $_ => '_sm_import_' . lc($id) . "_$_" }
+        qw(flay battute battute_doppie track_map undo_flay undo_battute state)};
 };
 has lock_name => sub ($self) {
     my ($database) = $self->db->selectrow_array('SELECT DATABASE()');
@@ -38,7 +42,7 @@ sub _fields ($self, $table) {
 }
 
 sub _drop ($self, $names) {
-    for my $role (qw(undo_battute undo_flay battute flay state)) {
+    for my $role (qw(undo_battute undo_flay battute_doppie battute flay track_map state)) {
         $self->db->do('DROP TABLE IF EXISTS ' . $self->db->quote_identifier($names->{$role}));
     }
 }
@@ -49,28 +53,37 @@ sub _pending ($self) {
         undef, '_sm_import_%');
     my %imports;
     for my $row (@$rows) {
-        next unless $row->[0] =~ /\A_sm_import_([0-9a-f]{32})_(flay|battute|undo_flay|undo_battute|state)\z/;
+        next unless $row->[0] =~ /\A_sm_import_([0-9a-f]{32})_(flay|battute|battute_doppie|track_map|undo_flay|undo_battute|state)\z/;
         $imports{$1}{$2} = $row->[0];
     }
     for my $id (sort keys %imports) {
         my $found = $imports{$id};
-        my ($phase, @bounds);
+        my ($phase, $state);
         if ($found->{state}) {
-            ($phase, @bounds) = $self->db->selectrow_array(
-                'SELECT phase, flay_min, flay_max, battute_min, battute_max FROM '
+            $state = $self->db->selectrow_hashref(
+                'SELECT * FROM '
                 . $self->db->quote_identifier($found->{state}) . ' WHERE id = ?', undef, 1);
+            $phase = $state->{phase} if $state;
         }
         if (defined $phase && $phase eq 'published') {
-            for my $i (0, 1) {
-                my ($min, $max) = @bounds[$i * 2, $i * 2 + 1];
-                my $table = $i ? 'battute' : 'flay';
-                unless (defined $min && defined $max && $min > 0 && $max >= $min) {
+            # I journal precedenti non contengono battute_doppie ne i conteggi.
+            my @tables = qw(flay battute);
+            push @tables, 'battute_doppie'
+                if exists $state->{battute_doppie_min} || $found->{battute_doppie} || $found->{track_map};
+            for my $table (@tables) {
+                my ($min, $max) = @{$state}{"${table}_min", "${table}_max"};
+                my $expected = $state->{"${table}_count"};
+                $expected = $max - $min + 1
+                    if !defined $expected && defined $min && defined $max && $min > 0;
+                unless (defined $min && defined $max && defined $expected
+                    && (($min > 0 && $max >= $min && $expected > 0 && $expected <= $max - $min + 1)
+                        || ($min == 0 && $max == 0 && $expected == 0))) {
                     $phase = 'recovery_required';
                     last;
                 }
                 my ($count) = $self->db->selectrow_array(
                     "SELECT COUNT(*) FROM $table WHERE row_id BETWEEN ? AND ?", undef, $min, $max);
-                if ($count != $max - $min + 1) {
+                if ($count != $expected) {
                     $phase = 'recovery_required';
                     last;
                 }
@@ -83,7 +96,8 @@ sub _pending ($self) {
                 . "_sm_import_${id}_state e le tabelle di recupero; non cancellarle senza verifica");
         }
         $self->ctx->log(warning => "Pulizia staging MyISAM abbandonato $id (fase $phase); nessuna modifica ai dati live");
-        my $names = {map { $_ => "_sm_import_${id}_$_" } qw(flay battute undo_flay undo_battute state)};
+        my $names = {map { $_ => "_sm_import_${id}_$_" }
+            qw(flay battute battute_doppie track_map undo_flay undo_battute state)};
         $self->_drop($names);
     }
 }
@@ -102,17 +116,17 @@ sub _check_triggers ($self) {
         undef, $grantee, 'TRIGGER', $database);
     my ($tables) = $self->db->selectrow_array(
         'SELECT COUNT(DISTINCT TABLE_NAME) FROM information_schema.TABLE_PRIVILEGES '
-        . 'WHERE GRANTEE = ? AND PRIVILEGE_TYPE = ? AND TABLE_SCHEMA = ? AND TABLE_NAME IN (?, ?)',
-        undef, $grantee, 'TRIGGER', $database, 'flay', 'battute');
+        . 'WHERE GRANTEE = ? AND PRIVILEGE_TYPE = ? AND TABLE_SCHEMA = ? AND TABLE_NAME IN (?, ?, ?)',
+        undef, $grantee, 'TRIGGER', $database, 'flay', 'battute', 'battute_doppie');
     ScriptManager::Exception->throw('mysql_import_permissions',
-        'Serve il privilegio diretto TRIGGER su flay e battute per verificare che non ci siano trigger nascosti; '
+        'Serve il privilegio diretto TRIGGER su flay, battute e battute_doppie per verificare che non ci siano trigger nascosti; '
         . 'la compensazione MyISAM non puo proseguire senza questa verifica')
-        unless $global || $schema || $tables == 2;
+        unless $global || $schema || $tables == 3;
     my ($count) = $self->db->selectrow_array(
-        'SELECT COUNT(*) FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = DATABASE() AND EVENT_OBJECT_TABLE IN (?, ?)',
-        undef, 'flay', 'battute');
+        'SELECT COUNT(*) FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = DATABASE() AND EVENT_OBJECT_TABLE IN (?, ?, ?)',
+        undef, 'flay', 'battute', 'battute_doppie');
     ScriptManager::Exception->throw('mysql_schema',
-        'Importazione MyISAM non consentita con trigger su flay o battute: gli effetti esterni non sono compensabili')
+        'Importazione MyISAM non consentita con trigger su flay, battute o battute_doppie: gli effetti esterni non sono compensabili')
         if $count;
 }
 
@@ -124,7 +138,7 @@ sub prepare ($self) {
     $self->ctx->log(info => 'Lock esclusivo del caricatore MyISAM acquisito', operation => 'myisam_lock');
     $self->_pending;
     $self->_check_triggers;
-    for my $table (qw(flay battute)) {
+    for my $table (qw(flay battute battute_doppie)) {
         my $rows = $self->db->selectall_arrayref(
             'SELECT COLUMN_NAME, COLUMN_TYPE, EXTRA FROM information_schema.COLUMNS '
             . 'WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION', undef, $table);
@@ -137,15 +151,20 @@ sub prepare ($self) {
     $self->db->do('CREATE TABLE ' . $self->table('state') . ' ('
         . 'id TINYINT PRIMARY KEY, phase VARCHAR(32) NOT NULL, '
         . 'flay_min BIGINT UNSIGNED, flay_max BIGINT UNSIGNED, '
-        . 'battute_min BIGINT UNSIGNED, battute_max BIGINT UNSIGNED) ENGINE=MyISAM');
+        . 'battute_min BIGINT UNSIGNED, battute_max BIGINT UNSIGNED, '
+        . 'battute_doppie_min BIGINT UNSIGNED, battute_doppie_max BIGINT UNSIGNED, '
+        . 'flay_count BIGINT UNSIGNED, battute_count BIGINT UNSIGNED, '
+        . 'battute_doppie_count BIGINT UNSIGNED) ENGINE=MyISAM');
     $self->owned(1);
     $self->db->do('INSERT INTO ' . $self->table('state') . ' (id, phase) VALUES (?, ?)', undef, 1, 'preparing');
-    for my $role (qw(flay battute undo_flay undo_battute)) {
-        my $source = $role =~ /flay\z/ ? 'flay' : 'battute';
+    for my $role (qw(flay battute battute_doppie undo_flay undo_battute)) {
+        (my $source = $role) =~ s/\Aundo_//;
         $self->db->do('CREATE TABLE ' . $self->table($role) . ' LIKE ' . $self->db->quote_identifier($source));
         $self->db->do('ALTER TABLE ' . $self->table($role) . ' AUTO_INCREMENT = 1');
     }
-    $self->ctx->log(info => 'Staging MyISAM creato: validazione senza scrivere in flay e battute',
+    $self->db->do('CREATE TABLE ' . $self->table('track_map')
+        . ' (local_id INT UNSIGNED PRIMARY KEY, live_id INT UNSIGNED NOT NULL) ENGINE=MyISAM');
+    $self->ctx->log(info => 'Staging MyISAM creato: validazione senza scrivere in flay, battute e battute_doppie',
         operation => 'myisam_staging', journal => $self->names->{state});
     return $self;
 }
@@ -156,14 +175,42 @@ sub _range ($self, $table) {
     my ($next) = $self->db->selectrow_array(
         'SELECT AUTO_INCREMENT FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?',
         undef, $table);
-    my ($size) = $self->db->selectrow_array('SELECT MAX(row_id) FROM ' . $self->table($table));
+    my ($size, $count) = $self->db->selectrow_array('SELECT MAX(row_id), COUNT(*) FROM ' . $self->table($table));
     ScriptManager::Exception->throw('mysql_staging_empty', "Staging $table vuoto o contatore MySQL non disponibile")
-        unless defined $size && $size > 0 && defined $next;
+        unless defined $count && defined $next;
     my $offset = $last > $next - 1 ? $last : $next - 1;
+    $self->counts->{$table} = $count;
+    unless ($count) {
+        $self->bounds->{$table} = [0, 0];
+        return $offset;
+    }
     ScriptManager::Exception->throw('mysql_id_exhausted', "Identificatori INT UNSIGNED esauriti per $table")
         if $offset + $size > 4_294_967_295;
     $self->bounds->{$table} = [$offset + 1, $offset + $size];
     return $offset;
+}
+
+sub _existing_tracks ($self) {
+    my $stage = $self->table('flay');
+    my $map = $self->table('track_map');
+    $self->db->do("INSERT INTO $map (local_id, live_id) SELECT $stage.row_id, flay.row_id "
+        . "FROM $stage INNER JOIN flay ON $stage.flay = flay.flay "
+        . "AND $stage.data = flay.data AND $stage.ora = flay.ora");
+    my ($count) = $self->db->selectrow_array("SELECT COUNT(*) FROM $map");
+    $self->reused_tracks($count);
+    return unless $count;
+    my $hits = $self->table('battute');
+    my @columns = grep { $_ ne 'row_id' } @{$self->columns->{battute}};
+    my $fields = join ', ', map { $self->db->quote_identifier($_) } @columns;
+    my ($diverted) = $self->db->selectrow_array(
+        "SELECT COUNT(*) FROM $hits WHERE flay_id IN (SELECT local_id FROM $map)");
+    $self->diverted_hits($diverted);
+    $self->db->do('INSERT INTO ' . $self->table('battute_doppie') . " ($fields) "
+        . "SELECT $fields FROM $hits WHERE flay_id IN (SELECT local_id FROM $map) ORDER BY row_id");
+    $self->db->do("DELETE FROM $hits WHERE flay_id IN (SELECT local_id FROM $map)");
+    $self->db->do("DELETE FROM $stage WHERE row_id IN (SELECT local_id FROM $map)");
+    $self->ctx->log(warning => "$count tracce gia presenti nel database: $diverted battute deviate in battute_doppie",
+        operation => 'myisam_existing_tracks');
 }
 
 sub _snapshot ($self, $airports) {
@@ -211,11 +258,12 @@ sub publish ($self, $airports, $merge = undef) {
     $self->ctx->check_cancel;
     $self->ctx->log(info => 'Pubblicazione MyISAM: acquisizione lock sulle tabelle live',
         operation => 'myisam_publish_lock');
-    $self->db->do('LOCK TABLES flay WRITE, battute WRITE, '
-        . join(', ', map { $self->table($_) . ' WRITE' } qw(flay battute undo_flay undo_battute state)));
+    $self->db->do('LOCK TABLES flay WRITE, battute WRITE, battute_doppie WRITE, '
+        . join(', ', map { $self->table($_) . ' WRITE' }
+            qw(flay battute battute_doppie track_map undo_flay undo_battute state)));
     $self->locked(1);
     $self->_check_triggers;
-    for my $table (qw(flay battute)) {
+    for my $table (qw(flay battute battute_doppie)) {
         my ($engine) = $self->db->selectrow_array(
             'SELECT ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?',
             undef, $table);
@@ -225,19 +273,30 @@ sub publish ($self, $airports, $merge = undef) {
         ScriptManager::Exception->throw('mysql_schema', "Schema o motore di $table cambiato durante lo staging")
             unless defined $engine && $engine eq 'MyISAM' && encode_json($schema) eq $self->schemas->{$table};
     }
-    my $track_offset = $self->_range('flay');
-    my $hit_offset = $self->_range('battute');
-    $self->db->do('UPDATE ' . $self->table('battute') . ' SET flay_id = flay_id + ?', undef, $track_offset);
+    $self->_existing_tracks;
+    my %offsets = map { $_ => $self->_range($_) } qw(flay battute battute_doppie);
+    for my $table (qw(battute battute_doppie)) {
+        $self->db->do('UPDATE ' . $self->table($table) . ' SET flay_id = COALESCE('
+            . '(SELECT live_id FROM ' . $self->table('track_map') . ' WHERE local_id = '
+            . $self->table($table) . '.flay_id), flay_id + ?)', undef, $offsets{flay});
+    }
     $self->db->do('UPDATE ' . $self->table('state')
-        . ' SET phase = ?, flay_min = ?, flay_max = ?, battute_min = ?, battute_max = ? WHERE id = ?',
-        undef, 'publishing', @{$self->bounds->{flay}}, @{$self->bounds->{battute}}, 1);
+        . ' SET phase = ?, flay_min = ?, flay_max = ?, battute_min = ?, battute_max = ?, '
+        . 'battute_doppie_min = ?, battute_doppie_max = ?, '
+        . 'flay_count = ?, battute_count = ?, battute_doppie_count = ? WHERE id = ?',
+        undef, 'publishing', (map { @{$self->bounds->{$_}} } qw(flay battute battute_doppie)),
+        (map { $self->counts->{$_} } qw(flay battute battute_doppie)), 1);
     $self->publishing(1);
     $self->_snapshot($airports) if $merge;
     $self->ctx->log(info => 'Inserimento delle tracce validate nelle tabelle live', operation => 'myisam_publish_tracks');
-    $self->_insert('flay', $track_offset);
+    $self->_insert('flay', $offsets{flay});
     $self->ctx->check_cancel;
     $self->ctx->log(info => 'Inserimento delle battute validate nelle tabelle live', operation => 'myisam_publish_hits');
-    $self->_insert('battute', $hit_offset);
+    $self->_insert('battute', $offsets{battute});
+    $self->ctx->check_cancel;
+    $self->ctx->log(info => 'Inserimento delle battute dei record duplicati in battute_doppie',
+        operation => 'myisam_publish_duplicates');
+    $self->_insert('battute_doppie', $offsets{battute_doppie});
     $merge->() if $merge;
     $self->ctx->check_cancel;
     {
@@ -273,7 +332,8 @@ sub abort ($self) {
             die "Lock delle tabelle perso\n" unless $self->locked;
             $self->ctx->log(error => 'Pubblicazione MyISAM interrotta: compensazione dei dati sotto lock',
                 operation => 'myisam_compensate');
-            for my $table (qw(battute flay)) {
+            for my $table (qw(battute_doppie battute flay)) {
+                next unless $self->counts->{$table};
                 $self->db->do("DELETE FROM $table WHERE row_id BETWEEN ? AND ?", undef, @{$self->bounds->{$table}});
             }
             for my $table (qw(flay battute)) {

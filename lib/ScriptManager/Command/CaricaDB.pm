@@ -185,6 +185,23 @@ sub merge_midnight ($self, $ctx, $db, $airports) {
     return;
 }
 
+sub _store_track ($self, $db, $insert, $find, $track) {
+    my $ok = eval { $insert->execute(@$track); 1 };
+    if ($ok) {
+        my $id = $db->last_insert_id(undef, undef, 'flay', undef);
+        die "Identificativo traccia MySQL mancante\n" unless defined $id;
+        return ($id, 0);
+    }
+    my $error = $@;
+    die $error if ScriptManager::Exception->caught($error) || ($insert->err // 0) != 1062;
+    $find->execute(@$track[0 .. 2]);
+    my $row = $find->fetchrow_arrayref;
+    ScriptManager::Exception->throw('mysql_duplicate',
+        'Traccia duplicata non individuabile tramite volo, data e ora; caricamento annullato')
+        unless $row && defined $row->[0];
+    return ($row->[0], 1);
+}
+
 sub run ($self, $ctx, $params) {
     my $config_file = $ENV{MRT_CONFIG_FILE} // 'config/local/MRT.json';
     $ctx->log(info => "Lettura configurazione radar: $config_file", operation => 'radar_config');
@@ -239,16 +256,16 @@ sub run ($self, $ctx, $params) {
         }
         ScriptManager::Exception->throw($code, $message);
     }
-    $ctx->log(info => 'Connessione MySQL riuscita; verifica tabelle flay e battute',
+    $ctx->log(info => 'Connessione MySQL riuscita; verifica tabelle flay, battute e battute_doppie',
         operation => 'mysql_schema');
     my $engines = $db->selectall_arrayref(
-        'SELECT TABLE_NAME, ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME IN (?, ?)',
-        undef, $params->{database}, 'flay', 'battute'
+        'SELECT TABLE_NAME, ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME IN (?, ?, ?)',
+        undef, $params->{database}, 'flay', 'battute', 'battute_doppie'
     );
     my %engines = map { $_->[0] => $_->[1] // '' } @$engines;
-    my $myisam = ($engines{flay} // '') eq 'MyISAM' && ($engines{battute} // '') eq 'MyISAM';
-    my $innodb = ($engines{flay} // '') eq 'InnoDB' && ($engines{battute} // '') eq 'InnoDB';
-    ScriptManager::Exception->throw('mysql_schema', 'Servono flay e battute entrambe MyISAM oppure entrambe InnoDB; '
+    my $myisam = !grep { ($engines{$_} // '') ne 'MyISAM' } qw(flay battute battute_doppie);
+    my $innodb = !grep { ($engines{$_} // '') ne 'InnoDB' } qw(flay battute battute_doppie);
+    ScriptManager::Exception->throw('mysql_schema', 'Servono flay, battute e battute_doppie tutte MyISAM oppure tutte InnoDB; '
         . 'motori misti, tabelle mancanti o altri motori non sono supportati') unless $myisam || $innodb;
     my $session = $myisam ? ScriptManager::Service::MyISAMImport->new(db => $db, ctx => $ctx) : undef;
     $ctx->log(info => 'Verifica abilitazione LOCAL INFILE sul server MySQL', operation => 'mysql_local_infile');
@@ -256,12 +273,15 @@ sub run ($self, $ctx, $params) {
     ScriptManager::Exception->throw('mysql_local_infile', 'Abilitare local_infile sul server MySQL') unless $local_infile;
     my $temporary = tempdir(CLEANUP => 1);
     my $csv = path($temporary, 'battute.csv');
+    my $duplicates_csv = path($temporary, 'battute_doppie.csv');
     $ctx->log(info => "Creazione file temporaneo battute: $csv", operation => 'create_csv');
     open my $output, '>', "$csv" or die "Creazione file battute fallita: $!\n";
+    open my $duplicates_output, '>', "$duplicates_csv" or die "Creazione file battute doppie fallita: $!\n";
     my ($tracks, $hits, $processed_files) = (0, 0, 0);
+    my ($duplicate_tracks, $duplicate_hits) = (0, 0);
     my %loaded_airports;
     $ctx->log(info => "Radar $radar->{id}, revisione " . ($radar->{revision_date} // 'non documentata')
-        . ", origine $radar->{x_m}/$radar->{y_m}; duplicati vietati");
+        . ", origine $radar->{x_m}/$radar->{y_m}; record duplicati destinati a battute_doppie");
     my $transaction_started = 0;
     my $ok = eval {
         if ($session) {
@@ -273,9 +293,14 @@ sub run ($self, $ctx, $params) {
         }
         my $flay_table = $session ? $session->table('flay') : 'flay';
         my $battute_table = $session ? $session->table('battute') : 'battute';
+        my $duplicates_table = $session ? $session->table('battute_doppie') : 'battute_doppie';
         $ctx->log(info => 'Preparazione inserimento tracce in flay', operation => 'prepare_tracks');
         my $insert = $db->prepare(
             "INSERT INTO $flay_table (flay,data,ora,aircraft,airport_dep,airport_arr,flay_operation,data_ora_italy) VALUES (?,?,?,?,?,?,?,?)"
+        );
+        my $find = $db->prepare(
+            "SELECT row_id FROM $flay_table WHERE flay = ? AND data = ? AND ora = ?"
+            . ($session ? '' : ' FOR UPDATE')
         );
         for my $entry (@$files) {
             $ctx->check_cancel;
@@ -293,11 +318,16 @@ sub run ($self, $ctx, $params) {
                     unless $line =~ /\n\z/ && length($line) >= 59 && (length($line) - 35) % 24 == 0;
                 $ctx->debug_operation("Validazione e inserimento traccia: $entry->{file}, riga $line_number");
                 my $track = __PACKAGE__->track($line, $entry->{icao});
-                $insert->execute(@$track);
-                my $track_id = $db->last_insert_id(undef, undef, 'flay', undef);
-                die "Identificativo traccia MySQL mancante\n" unless defined $track_id;
-                $tracks++;
-                $file_tracks++;
+                my ($track_id, $duplicate) = $self->_store_track($db, $insert, $find, $track);
+                if ($duplicate) {
+                    $duplicate_tracks++;
+                    $ctx->log(warning => "Record duplicato: $entry->{file}, riga $line_number; "
+                        . "volo $track->[0], data $track->[1], ora $track->[2]; battute destinate a battute_doppie",
+                        operation => 'duplicate_track', track_id => $track_id);
+                } else {
+                    $tracks++;
+                    $file_tracks++;
+                }
                 my %seen_hits;
                 for (my $offset = 34; $offset + 24 < length($line); $offset += 24) {
                     $ctx->debug_operation("Conversione e scrittura battuta: traccia $track_id, offset $offset");
@@ -307,10 +337,12 @@ sub run ($self, $ctx, $params) {
                     my @fields = (undef, $hit->[0], $track_id, $hit->[1], $hit->[2],
                         $hit->[3] > 0 ? $hit->[3] : undef, $hit->[3],
                         (undef) x 5, $hit->[4]);
-                    print {$output} join(',', map { defined $_ ? $_ : '\\N' } @fields), "\n"
+                    my $destination = $duplicate ? $duplicates_output : $output;
+                    print {$destination} join(',', map { defined $_ ? $_ : '\\N' } @fields), "\n"
                         or die "Scrittura battute fallita: $!\n";
                     $hits++;
                     $file_hits++;
+                    $duplicate_hits++ if $duplicate;
                 }
             }
             close $input or die "Chiusura OUT fallita: $!\n";
@@ -321,19 +353,27 @@ sub run ($self, $ctx, $params) {
         }
         $ctx->log(info => "Chiusura CSV: $tracks tracce e $hits battute preparate", operation => 'close_csv');
         close $output or die "Chiusura battute fallita: $!\n";
-        die "Nessuna traccia nei file OUT\n" unless $tracks;
+        close $duplicates_output or die "Chiusura battute doppie fallita: $!\n";
+        die "Nessuna traccia nei file OUT\n" unless $tracks || $duplicate_tracks;
         $ctx->check_cancel;
-        $ctx->log(info => 'Caricamento CSV nella tabella battute (LOAD DATA LOCAL INFILE)', operation => 'load_hits');
-        $db->do("LOAD DATA LOCAL INFILE ? INTO TABLE $battute_table FIELDS TERMINATED BY ',' "
-            . '(row_id,ora,flay_id,X_m,Y_m,Z_m,H_m,A_m,path,vel,hmod,validation,time_italy)', undef, "$csv");
-        $ctx->log(info => 'Verifica warning MySQL dopo il caricamento', operation => 'check_mysql_warnings');
-        my $warnings = $db->selectall_arrayref('SHOW WARNINGS');
-        $ctx->log(warning => "Warning MySQL: codice $warnings->[0][1]; caricamento da annullare") if @$warnings;
-        die "Caricamento battute rifiutato (duplicati o dati non validi), codice MySQL $warnings->[0][1]\n" if @$warnings;
+        for my $load ([$battute_table, $csv, $hits - $duplicate_hits],
+                      [$duplicates_table, $duplicates_csv, $duplicate_hits]) {
+            next unless $load->[2];
+            $ctx->log(info => "Caricamento CSV nella tabella $load->[0] (LOAD DATA LOCAL INFILE)", operation => 'load_hits');
+            $db->do("LOAD DATA LOCAL INFILE ? INTO TABLE $load->[0] FIELDS TERMINATED BY ',' "
+                . '(row_id,ora,flay_id,X_m,Y_m,Z_m,H_m,A_m,path,vel,hmod,validation,time_italy)', undef, "$load->[1]");
+            $ctx->log(info => 'Verifica warning MySQL dopo il caricamento', operation => 'check_mysql_warnings');
+            my $warnings = $db->selectall_arrayref('SHOW WARNINGS');
+            $ctx->log(warning => "Warning MySQL: codice $warnings->[0][1]; caricamento da annullare") if @$warnings;
+            die "Caricamento battute rifiutato (duplicati o dati non validi), codice MySQL $warnings->[0][1]\n" if @$warnings;
+        }
         if ($session) {
             my $merge = $params->{merge_midnight}
                 ? sub { $self->merge_midnight($ctx, $db, \%loaded_airports) } : undef;
             $session->publish(\%loaded_airports, $merge);
+            $tracks -= $session->reused_tracks;
+            $duplicate_tracks += $session->reused_tracks;
+            $duplicate_hits += $session->diverted_hits;
         } else {
             $self->merge_midnight($ctx, $db, \%loaded_airports) if $params->{merge_midnight};
             $ctx->check_cancel;
@@ -384,7 +424,11 @@ sub run ($self, $ctx, $params) {
         $db->disconnect;
         $ctx->progress(100, 'Caricamento MySQL completato');
     }
-    return {success => 1, message => "Caricate $tracks tracce e $hits battute", data => {tracks => $tracks, hits => $hits}};
+    my $message = "Caricate $tracks tracce e $hits battute";
+    $message .= "; $duplicate_tracks record duplicati, $duplicate_hits battute in battute_doppie" if $duplicate_tracks;
+    return {success => 1, message => $message, data => {
+        tracks => $tracks, hits => $hits, duplicate_tracks => $duplicate_tracks, duplicate_hits => $duplicate_hits,
+    }};
 }
 
 1;
