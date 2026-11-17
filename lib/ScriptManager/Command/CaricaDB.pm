@@ -279,6 +279,7 @@ sub run ($self, $ctx, $params) {
     open my $duplicates_output, '>', "$duplicates_csv" or die "Creazione file battute doppie fallita: $!\n";
     my ($tracks, $hits, $processed_files) = (0, 0, 0);
     my ($duplicate_tracks, $duplicate_hits) = (0, 0);
+    my $skipped_tracks = 0;
     my %loaded_airports;
     $ctx->log(info => "Radar $radar->{id}, revisione " . ($radar->{revision_date} // 'non documentata')
         . ", origine $radar->{x_m}/$radar->{y_m}; record duplicati destinati a battute_doppie");
@@ -304,7 +305,6 @@ sub run ($self, $ctx, $params) {
         );
         for my $entry (@$files) {
             $ctx->check_cancel;
-            $loaded_airports{$entry->{icao}} = 1;
             $ctx->log(info => 'Apertura OUT: ' . $entry->{file} . ': ' . $config->{airports}{$entry->{icao}},
                 operation => 'read_file');
             open my $input, '<', $entry->{file}->to_string or die "Lettura OUT fallita: $!\n";
@@ -314,10 +314,19 @@ sub run ($self, $ctx, $params) {
                 $ctx->check_cancel;
                 next if $line =~ /\A\r?\n\z/;
                 $line =~ s/\r\n\z/\n/;
+                if ($line =~ /\n\z/ && length($line) == 35) {
+                    my $track = __PACKAGE__->track($line, $entry->{icao});
+                    $skipped_tracks++;
+                    $ctx->log(warning => "Traccia senza battute ignorata: $entry->{file}, riga $line_number; "
+                        . "volo $track->[0], data $track->[1], ora $track->[2]; nessun dato inserito per questo record",
+                        operation => 'skip_empty_track');
+                    next;
+                }
                 die "Record OUT incompleto: " . $entry->{file}->basename . "\n"
                     unless $line =~ /\n\z/ && length($line) >= 59 && (length($line) - 35) % 24 == 0;
                 $ctx->debug_operation("Validazione e inserimento traccia: $entry->{file}, riga $line_number");
                 my $track = __PACKAGE__->track($line, $entry->{icao});
+                $loaded_airports{$entry->{icao}} = 1;
                 my ($track_id, $duplicate) = $self->_store_track($db, $insert, $find, $track);
                 if ($duplicate) {
                     $duplicate_tracks++;
@@ -354,7 +363,7 @@ sub run ($self, $ctx, $params) {
         $ctx->log(info => "Chiusura CSV: $tracks tracce e $hits battute preparate", operation => 'close_csv');
         close $output or die "Chiusura battute fallita: $!\n";
         close $duplicates_output or die "Chiusura battute doppie fallita: $!\n";
-        die "Nessuna traccia nei file OUT\n" unless $tracks || $duplicate_tracks;
+        die "Nessuna traccia nei file OUT\n" unless $tracks || $duplicate_tracks || $skipped_tracks;
         $ctx->check_cancel;
         for my $load ([$battute_table, $csv, $hits - $duplicate_hits],
                       [$duplicates_table, $duplicates_csv, $duplicate_hits]) {
@@ -367,15 +376,16 @@ sub run ($self, $ctx, $params) {
             $ctx->log(warning => "Warning MySQL: codice $warnings->[0][1]; caricamento da annullare") if @$warnings;
             die "Caricamento battute rifiutato (duplicati o dati non validi), codice MySQL $warnings->[0][1]\n" if @$warnings;
         }
+        my $merge_midnight = $params->{merge_midnight} && ($tracks || $duplicate_tracks);
         if ($session) {
-            my $merge = $params->{merge_midnight}
+            my $merge = $merge_midnight
                 ? sub { $self->merge_midnight($ctx, $db, \%loaded_airports) } : undef;
             $session->publish(\%loaded_airports, $merge);
             $tracks -= $session->reused_tracks;
             $duplicate_tracks += $session->reused_tracks;
             $duplicate_hits += $session->diverted_hits;
         } else {
-            $self->merge_midnight($ctx, $db, \%loaded_airports) if $params->{merge_midnight};
+            $self->merge_midnight($ctx, $db, \%loaded_airports) if $merge_midnight;
             $ctx->check_cancel;
             $ctx->log(info => 'Conferma transazione MySQL (commit)', operation => 'commit');
             $db->commit;
@@ -426,8 +436,10 @@ sub run ($self, $ctx, $params) {
     }
     my $message = "Caricate $tracks tracce e $hits battute";
     $message .= "; $duplicate_tracks record duplicati, $duplicate_hits battute in battute_doppie" if $duplicate_tracks;
+    $message .= "; $skipped_tracks tracce senza battute ignorate" if $skipped_tracks;
     return {success => 1, message => $message, data => {
         tracks => $tracks, hits => $hits, duplicate_tracks => $duplicate_tracks, duplicate_hits => $duplicate_hits,
+        skipped_tracks => $skipped_tracks,
     }};
 }
 

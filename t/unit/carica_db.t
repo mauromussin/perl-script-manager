@@ -156,6 +156,47 @@ subtest 'importazione e opzione mezzanotte' => sub {
     }
 };
 
+subtest 'tracce senza battute ignorate con warning senza interrompere i record validi' => sub {
+    $input->child('LIML_20260202.OUT')->spew("$header\n$header$hit\n$header\r\n");
+    my $db = LoaderDatabase->new;
+    my $ctx = LoaderContext->new;
+    my $loader = ScriptManager::Command::CaricaDB->new(connect_db => sub (@args) { $db });
+    my $result = $loader->run($ctx, $params);
+    ok $result->{success};
+    ok $db->committed, 'record valido confermato';
+    is $result->{data}{tracks}, 1, 'nessuna traccia vuota inserita';
+    is $result->{data}{hits}, 1;
+    is $result->{data}{skipped_tracks}, 2, 'LF e CRLF gestiti';
+    like $result->{message}, qr/2 tracce senza battute ignorate/, 'scarti visibili nel riepilogo';
+    my @inserts = grep { $_->[0] =~ /\AINSERT/ } @{$db->queries};
+    is scalar @inserts, 1, 'record vuoti scartati prima di INSERT';
+    my @warnings = grep { $_->[0] eq 'warning' } @{$ctx->events};
+    is scalar @warnings, 2;
+    like $warnings[0][1], qr/\Q$input\E.*riga 1.*ABC1234.*20260202.*120000/, 'warning con origine e chiave';
+    like $warnings[1][1], qr/riga 3/, 'numero di riga corretto dopo il record valido';
+    $input->child('LIML_20260202.OUT')->spew("$header$hit\n");
+};
+
+subtest 'soltanto tracce senza battute completano senza merge; record troncati restano errori' => sub {
+    $input->child('LIML_20260202.OUT')->spew("$header\n");
+    my $db = LoaderDatabase->new;
+    my $loader = ScriptManager::Command::CaricaDB->new(connect_db => sub (@args) { $db });
+    my $result = $loader->run(LoaderContext->new, {%$params, merge_midnight => 1});
+    ok $result->{success};
+    is $result->{data}{tracks}, 0;
+    is $result->{data}{hits}, 0;
+    is $result->{data}{skipped_tracks}, 1;
+    ok !grep { $_->[0] =~ /\A(?:INSERT|LOAD|SELECT row_id)/ } @{$db->queries};
+    for my $bad (substr($header, 0, 33) . "\n", $header . substr($hit, 0, 23) . "\n", $header) {
+        $input->child('LIML_20260202.OUT')->spew("$header$hit\n$bad");
+        $db = LoaderDatabase->new;
+        eval { $loader->run(LoaderContext->new, $params) };
+        like "$@", qr/Record OUT incompleto/, 'record non integro ancora rifiutato';
+        ok $db->rolled_back && !$db->committed, 'dati parziali annullati';
+    }
+    $input->child('LIML_20260202.OUT')->spew("$header$hit\n");
+};
+
 subtest 'motori misti o tabelle mancanti rifiutati prima di scrivere' => sub {
     for my $engines ([['flay', 'MyISAM'], ['battute', 'InnoDB']],
                      [['flay', 'MyISAM']],

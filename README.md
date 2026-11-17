@@ -170,6 +170,15 @@ Il risultato contiene `tracks` (nuove tracce), `hits` (battute complessive),
 `duplicate_tracks` (record associati a una traccia gia individuata) e
 `duplicate_hits` (battute destinate a `battute_doppie`).
 
+Le righe con intestazione completa di 34 caratteri e terminatore LF/CRLF,
+ma senza battute, vengono ignorate prima di inserire la traccia. Ogni scarto
+produce un WARNING con percorso completo, riga, volo, data e ora. Il riepilogo
+riporta il totale ignorato e il risultato espone `skipped_tracks`.
+Se tutti i record sono di questo tipo, il caricamento termina con zero dati
+caricati e i WARNING, senza eseguire il merge a mezzanotte. Un file veramente
+vuoto resta invece un errore, cosi come intestazioni troncate, battute parziali
+o righe prive del terminatore previsto.
+
 `battute_doppie` deve accettare le stesse 13 colonne di caricamento di
 `battute`; nello schema operativo verificato non ha il vincolo `u_battuta`.
 Il caricatore non crea o modifica questa tabella. Record identici sono
