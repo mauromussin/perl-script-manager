@@ -202,6 +202,30 @@ sub _store_track ($self, $db, $insert, $find, $track) {
     return ($row->[0], 1);
 }
 
+sub _complete_track ($self, $ctx, $db, $id, $track) {
+    my @fields = qw(aircraft airport_dep airport_arr flay_operation data_ora_italy);
+    my @current = $db->selectrow_array(
+        'SELECT ' . join(', ', @fields) . ' FROM flay WHERE row_id = ?', undef, $id);
+    ScriptManager::Exception->throw('mysql_schema', "Traccia $id non piu disponibile durante il completamento")
+        unless @current;
+    my (@updates, @values, @changed);
+    for my $i (0 .. $#fields) {
+        next if defined $current[$i] && $current[$i] =~ /\S/;
+        my $value = $track->[$i + 3];
+        next unless defined $value && $value =~ /\S/;
+        push @updates, $db->quote_identifier($fields[$i]) . ' = ?';
+        push @values, $value;
+        push @changed, $fields[$i];
+    }
+    if (@updates) {
+        $db->do('UPDATE flay SET ' . join(', ', @updates) . ' WHERE row_id = ?', undef, @values, $id);
+    }
+    $ctx->log(info => "Traccia $id senza battute: "
+        . (@changed ? 'completati i campi vuoti ' . join(', ', @changed) : 'metadati invariati')
+        . '; battute destinate alla tabella principale',
+        operation => 'complete_empty_track', track_id => $id);
+}
+
 sub run ($self, $ctx, $params) {
     my $config_file = $ENV{MRT_CONFIG_FILE} // 'config/local/MRT.json';
     $ctx->log(info => "Lettura configurazione radar: $config_file", operation => 'radar_config');
@@ -279,6 +303,7 @@ sub run ($self, $ctx, $params) {
     open my $duplicates_output, '>', "$duplicates_csv" or die "Creazione file battute doppie fallita: $!\n";
     my ($tracks, $hits, $processed_files) = (0, 0, 0);
     my ($duplicate_tracks, $duplicate_hits) = (0, 0);
+    my $repaired_tracks = 0;
     my $skipped_tracks = 0;
     my %loaded_airports;
     $ctx->log(info => "Radar $radar->{id}, revisione " . ($radar->{revision_date} // 'non documentata')
@@ -303,6 +328,7 @@ sub run ($self, $ctx, $params) {
             "SELECT row_id FROM $flay_table WHERE flay = ? AND data = ? AND ora = ?"
             . ($session ? '' : ' FOR UPDATE')
         );
+        my %seen_tracks;
         for my $entry (@$files) {
             $ctx->check_cancel;
             $ctx->log(info => 'Apertura OUT: ' . $entry->{file} . ': ' . $config->{airports}{$entry->{icao}},
@@ -328,12 +354,24 @@ sub run ($self, $ctx, $params) {
                 my $track = __PACKAGE__->track($line, $entry->{icao});
                 $loaded_airports{$entry->{icao}} = 1;
                 my ($track_id, $duplicate) = $self->_store_track($db, $insert, $find, $track);
+                my $repaired = 0;
+                if (!$session && $duplicate && !$seen_tracks{$track_id}) {
+                    my ($hit_id) = $db->selectrow_array(
+                        'SELECT row_id FROM battute WHERE flay_id = ? LIMIT 1 FOR UPDATE', undef, $track_id);
+                    unless (defined $hit_id) {
+                        $self->_complete_track($ctx, $db, $track_id, $track);
+                        $repaired_tracks++;
+                        $repaired = 1;
+                        $duplicate = 0;
+                    }
+                }
+                $seen_tracks{$track_id} = 1;
                 if ($duplicate) {
                     $duplicate_tracks++;
                     $ctx->log(warning => "Record duplicato: $entry->{file}, riga $line_number; "
                         . "volo $track->[0], data $track->[1], ora $track->[2]; battute destinate a battute_doppie",
                         operation => 'duplicate_track', track_id => $track_id);
-                } else {
+                } elsif (!$repaired) {
                     $tracks++;
                     $file_tracks++;
                 }
@@ -363,7 +401,7 @@ sub run ($self, $ctx, $params) {
         $ctx->log(info => "Chiusura CSV: $tracks tracce e $hits battute preparate", operation => 'close_csv');
         close $output or die "Chiusura battute fallita: $!\n";
         close $duplicates_output or die "Chiusura battute doppie fallita: $!\n";
-        die "Nessuna traccia nei file OUT\n" unless $tracks || $duplicate_tracks || $skipped_tracks;
+        die "Nessuna traccia nei file OUT\n" unless $tracks || $duplicate_tracks || $repaired_tracks || $skipped_tracks;
         $ctx->check_cancel;
         for my $load ([$battute_table, $csv, $hits - $duplicate_hits],
                       [$duplicates_table, $duplicates_csv, $duplicate_hits]) {
@@ -376,13 +414,15 @@ sub run ($self, $ctx, $params) {
             $ctx->log(warning => "Warning MySQL: codice $warnings->[0][1]; caricamento da annullare") if @$warnings;
             die "Caricamento battute rifiutato (duplicati o dati non validi), codice MySQL $warnings->[0][1]\n" if @$warnings;
         }
-        my $merge_midnight = $params->{merge_midnight} && ($tracks || $duplicate_tracks);
+        my $merge_midnight = $params->{merge_midnight} && ($tracks || $duplicate_tracks || $repaired_tracks);
         if ($session) {
             my $merge = $merge_midnight
                 ? sub { $self->merge_midnight($ctx, $db, \%loaded_airports) } : undef;
-            $session->publish(\%loaded_airports, $merge);
+            $session->publish(\%loaded_airports, $merge,
+                sub ($id, $track) { $self->_complete_track($ctx, $db, $id, $track) });
             $tracks -= $session->reused_tracks;
-            $duplicate_tracks += $session->reused_tracks;
+            $repaired_tracks += $session->repaired_tracks;
+            $duplicate_tracks += $session->reused_tracks - $session->repaired_tracks;
             $duplicate_hits += $session->diverted_hits;
         } else {
             $self->merge_midnight($ctx, $db, \%loaded_airports) if $merge_midnight;
@@ -435,11 +475,13 @@ sub run ($self, $ctx, $params) {
         $ctx->progress(100, 'Caricamento MySQL completato');
     }
     my $message = "Caricate $tracks tracce e $hits battute";
+    $message .= "; $repaired_tracks tracce preesistenti senza battute completate" if $repaired_tracks;
     $message .= "; $duplicate_tracks record duplicati, $duplicate_hits battute in battute_doppie" if $duplicate_tracks;
     $message .= "; $skipped_tracks tracce senza battute ignorate" if $skipped_tracks;
     return {success => 1, message => $message, data => {
         tracks => $tracks, hits => $hits, duplicate_tracks => $duplicate_tracks, duplicate_hits => $duplicate_hits,
         skipped_tracks => $skipped_tracks,
+        repaired_tracks => $repaired_tracks,
     }};
 }
 

@@ -627,6 +627,20 @@ dei record successivi a `battute_doppie`. Non si modifica il nome del volo e
 non si sovrascrivono i metadati della prima traccia. La regola include tracce
 gia presenti nel database; MyISAM le risolve soltanto sotto lock durante la
 pubblicazione. Una mappa associa gli ID locali a quelli preesistenti.
+Estensione approvata: se la traccia esistente non ha alcuna riga in `battute`,
+la prima occorrenza valida nell'OUT ne completa soltanto i campi vuoti
+(`aircraft`, `airport_dep`, `airport_arr`, `flay_operation`, `data_ora_italy`)
+e ne inserisce le battute nella tabella principale, conservando lo stesso ID.
+Vuoto significa NULL, stringa vuota o soli spazi; i valori non vuoti non
+vengono sovrascritti e, se tutti sono presenti, non si esegue UPDATE.
+La regola vale anche in presenza di `battute_doppie` e di flag validati o `M`,
+che il completamento non modifica. Le ulteriori occorrenze nello stesso
+caricamento restano doppie. InnoDB verifica l'assenza di battute nella
+transazione e ricorda gli ID gia trattati, poiche il LOAD avviene dopo il
+parsing. MyISAM decide sotto lock sulle tabelle live e salva i record da
+completare in `undo_flay`, anche se il merge e disabilitato. I backup per
+completamento e merge sono uniti senza sovrascrivere l'immagine originale.
+L'esito distingue `repaired_tracks` dalle nuove tracce e dai duplicati.
 La prima occorrenza segue l'ordine dei file e delle righe; le altre vengono
 conservate separatamente anche se identiche. Le riesecuzioni di import gia
 completati non sono idempotenti e aggiungono ulteriori battute doppie.

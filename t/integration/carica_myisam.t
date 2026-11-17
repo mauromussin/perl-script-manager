@@ -39,12 +39,16 @@ plan skip_all => 'TEST_MYSQL=1 necessario per creare un database MySQL isolato'
     has drop_failure => 0;
     has trigger_count => 0;
     has failure_table => 'battute';
+    has fail_track_update => 0;
+    has statements => sub { [] };
     sub do ($self, $sql, @args) {
+        push @{$self->statements}, [$sql, @args];
         die "Errore compensazione simulato\n"
             if $self->cleanup_failure && $sql =~ /\ADELETE FROM battute/;
         die "Errore pulizia simulato\n"
             if $self->drop_failure && $sql =~ /\ADROP TABLE/;
         my $result = $self->db->do($sql, @args);
+        die "Errore dopo aggiornamento traccia\n" if $self->fail_track_update && $sql =~ /\AUPDATE flay SET/;
         my $table = $self->failure_table;
         if ($self->failure && !$self->failed && $sql =~ /\AINSERT INTO `\Q$table\E`/) {
             $self->failed(1);
@@ -223,6 +227,7 @@ subtest 'tracce senza battute non bloccano MyISAM e non attivano da sole il merg
         ok $result->{success};
         is_deeply $result->{data}, {
             tracks => $valid, hits => $valid, duplicate_tracks => 0, duplicate_hits => 0, skipped_tracks => 2,
+            repaired_tracks => 0,
         };
         is scalar @{rows('flay')}, 2 + $valid;
         is scalar @{rows('battute')}, 1 + $valid;
@@ -246,7 +251,7 @@ subtest 'duplicati nello stesso OUT e tra OUT conservano le battute separatament
     my $result = loader()->run($ctx, $params);
     $input->child('LIML_2.OUT')->remove;
     ok $result->{success};
-    is_deeply $result->{data}, {tracks => 2, hits => 4, duplicate_tracks => 2, duplicate_hits => 2, skipped_tracks => 0};
+    is_deeply $result->{data}, {tracks => 2, hits => 4, duplicate_tracks => 2, duplicate_hits => 2, skipped_tracks => 0, repaired_tracks => 0};
     is scalar @{rows('flay')}, 2, 'nessuna traccia aggiuntiva o carattere spia';
     is rows('flay')->[0][1], 'ABC1234', 'nome volo originale preservato';
     is scalar @{rows('battute')}, 2, 'solo le prime occorrenze in battute';
@@ -271,7 +276,7 @@ subtest 'duplicati live riusano ID e metadati senza modificare battute preesiste
     $input->child('LIML.OUT')->spew(record('ZZZ1234') . record('ABC1234') . record('ZZZ1234'));
     my $result = loader()->run(context(), $params);
     ok $result->{success};
-    is_deeply $result->{data}, {tracks => 1, hits => 3, duplicate_tracks => 2, duplicate_hits => 2, skipped_tracks => 0};
+    is_deeply $result->{data}, {tracks => 1, hits => 3, duplicate_tracks => 2, duplicate_hits => 2, skipped_tracks => 0, repaired_tracks => 0};
     is_deeply rows('flay')->[0], $before->[0], 'validazione e metadati preesistenti intatti';
     is_deeply rows('battute')->[0], $hits->[0];
     is scalar @{rows('flay')}, 2;
@@ -282,9 +287,112 @@ subtest 'duplicati live riusano ID e metadati senza modificare battute preesiste
     cmp_ok rows('battute_doppie')->[-2][0], '>', 300, 'AUTO_INCREMENT doppie rispettato';
     $input->child('LIML.OUT')->spew(record('ZZZ1234'));
     $result = loader()->run(context(), $params);
-    is_deeply $result->{data}, {tracks => 0, hits => 1, duplicate_tracks => 1, duplicate_hits => 1, skipped_tracks => 0},
+    is_deeply $result->{data}, {tracks => 0, hits => 1, duplicate_tracks => 1, duplicate_hits => 1, skipped_tracks => 0, repaired_tracks => 0},
         'caricamento composto soltanto da tracce gia presenti';
     is_deeply work_tables(), [];
+};
+
+subtest 'tracce esistenti senza battute completano solo i campi vuoti e ricevono le battute principali' => sub {
+    for my $engine (qw(MyISAM InnoDB)) {
+        reset_tables();
+        $admin->do("ALTER TABLE $_ ENGINE=$engine") for qw(flay battute battute_doppie);
+        $admin->do(q{INSERT INTO flay (row_id,flay,data,ora,aircraft,airport_arr,validation_fl,validation_bt)
+            VALUES (42,'ABC1234','2026-02-02','12:00:00','   ','LIRF','Y',1)});
+        my $identical = ScriptManager::Command::CaricaDB->track(record('NEW0001'), 'LIML');
+        $admin->do(q{INSERT INTO flay
+            (row_id,flay,data,ora,aircraft,airport_dep,airport_arr,flay_operation,data_ora_italy,validation_fl,validation_bt)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?)}, undef, 43, @$identical, 'M', 0);
+        $admin->do(q{INSERT INTO flay
+            (row_id,flay,data,ora,aircraft,airport_dep,airport_arr,flay_operation,data_ora_italy)
+            VALUES (44,'ALT0001','2026-02-02','12:00:00','A320','EGLL','LIRF','A','2026-01-01 01:00:00'),
+                   (45,'HIT0001','2026-02-02','12:00:00',NULL,NULL,NULL,NULL,NULL)});
+        $admin->do(q{INSERT INTO battute (flay_id,ora) VALUES (45,'12:00:00')});
+        $admin->do(q{INSERT INTO battute_doppie (row_id,flay_id,ora) VALUES (300,42,'12:00:00')});
+        my $before = rows('flay');
+        my $old_duplicate = rows('battute_doppie')->[0];
+        $input->child('LIML.OUT')->spew(record() . record() . record('NEW0001') . record('ALT0001') . record('HIT0001'));
+        my $db = connection();
+        my $load = MyISAMTestLoader->new(connect_db => sub (@) { $engine eq 'MyISAM' ? $db : $db->db });
+        my $result = $load->run(context(), $params);
+        ok $result->{success}, "$engine: caricamento riuscito";
+        is_deeply $result->{data}, {
+            tracks => 0, hits => 5, duplicate_tracks => 2, duplicate_hits => 2, skipped_tracks => 0, repaired_tracks => 3,
+        };
+        like $result->{message}, qr/3 tracce preesistenti senza battute completate/;
+        my $after = rows('flay');
+        is scalar @$after, 4, 'nessuna nuova traccia';
+        is_deeply [@{$after->[0]}[0 .. 10]],
+            [42, 'ABC1234', '2026-02-02', '12:00:00', 'B738', 'LIML', 'LIRF', 'D', 'Y', 1, '2026-02-02 13:00:00'],
+            'completati soltanto campi vuoti; ID, valori e flag validati preservati';
+        is_deeply $after->[1], $before->[1], 'traccia identica e flag M invariati';
+        is_deeply $after->[2], $before->[2], 'campi non vuoti discordanti preservati';
+        is_deeply $after->[3], $before->[3], 'traccia con battute gia presenti non completata';
+        is_deeply [map { $_->[2] } @{rows('battute')}], [45, 42, 43, 44],
+            'prime battute collegate agli ID esistenti';
+        is scalar @{rows('battute_doppie')}, 3;
+        is_deeply rows('battute_doppie')->[0], $old_duplicate, 'doppie preesistenti non impediscono il completamento';
+        is_deeply [sort { $a <=> $b } map { $_->[2] } @{rows('battute_doppie')}], [42, 42, 45],
+            'ulteriori occorrenze e tracce con battute vanno nelle doppie';
+        if ($engine eq 'MyISAM') {
+            my @updates = grep { $_->[0] =~ /\AUPDATE flay SET/ } @{$db->statements};
+            is scalar @updates, 1, 'nessun UPDATE se i metadati sono gia presenti';
+            is $updates[0][-1], 42, 'UPDATE solo sulla traccia con campi vuoti';
+        }
+        is_deeply work_tables(), [];
+        $input->child('LIML.OUT')->spew(record());
+        $result = loader()->run(context(), $params) if $engine eq 'MyISAM';
+        if ($engine eq 'MyISAM') {
+            is $result->{data}{repaired_tracks}, 0, 'dopo il recupero la traccia non e piu priva di battute';
+            is $result->{data}{duplicate_hits}, 1, 'riesecuzione instradata nelle doppie';
+        }
+    }
+};
+
+subtest 'compensazione ripristina i metadati completati anche senza merge' => sub {
+    reset_tables();
+    $admin->do(q{INSERT INTO flay (row_id,flay,data,ora,validation_fl,validation_bt)
+        VALUES (42,'ABC1234','2026-02-02','12:00:00','M',1)});
+    $admin->do(q{INSERT INTO battute_doppie (flay_id,ora) VALUES (42,'12:00:00')});
+    my @before = map { rows($_) } qw(flay battute battute_doppie);
+    $input->child('LIML.OUT')->spew(record() . record() . record('NEW0001'));
+    for my $case (
+        [connection(fail_track_update => 1), context(), 'mysql_load_failed'],
+        [connection(failure => "Errore dopo battute principali\n"), context(), 'mysql_load_failed'],
+        [connection(), context(cancel_at => 'complete_empty_track'), 'cancelled'],
+        [connection(failure => ScriptManager::Exception->new(code => 'timed_out', message => 'Timeout test')),
+            context(), 'timed_out'],
+    ) {
+        my $load = MyISAMTestLoader->new(connect_db => sub (@) { $case->[0] });
+        eval { $load->run($case->[1], $params) };
+        ok(ScriptManager::Exception->caught($@, $case->[2]), 'errore preservato');
+        is_deeply rows('flay'), $before[0], 'metadati e flag preesistenti ripristinati';
+        is_deeply rows('battute'), $before[1];
+        is_deeply rows('battute_doppie'), $before[2];
+        is_deeply work_tables(), [];
+    }
+};
+
+subtest 'completamento prima del merge resta annullabile con entrambi i motori' => sub {
+    for my $engine (qw(MyISAM InnoDB)) {
+        reset_tables();
+        $admin->do("ALTER TABLE $_ ENGINE=$engine") for qw(flay battute battute_doppie);
+        $admin->do(q{INSERT INTO flay (row_id,flay,data,ora,airport_dep,flay_operation)
+            VALUES (1,'ABC1234','2026-02-01','23:05:00','LIML','D'),
+                   (42,'ABC1234','2026-02-02','00:05:00',NULL,NULL)});
+        $admin->do(q{INSERT INTO battute (flay_id,ora) VALUES (1,'23:05:00')});
+        my @before = map { rows($_) } qw(flay battute battute_doppie);
+        $input->child('LIML.OUT')->spew(record('ABC1234', '20260202', '000500'));
+        my $db = connection();
+        my $load = MyISAMTestLoader->new(
+            connect_db => sub (@) { $engine eq 'MyISAM' ? $db : $db->db }, fail_after_merge => 1);
+        eval { $load->run(context(), {%$params, merge_midnight => 1}) };
+        ok $@, "$engine: errore dopo merge";
+        is_deeply rows('flay'), $before[0], 'ripristinati anche campi che rendevano la traccia idonea al merge';
+        is_deeply rows('battute'), $before[1], 'nuove battute rimosse anche dopo spostamento';
+        is_deeply rows('battute_doppie'), $before[2];
+        is_deeply work_tables(), [];
+        $db->disconnect if $engine eq 'InnoDB';
+    }
 };
 
 subtest 'errore dopo inserimento doppie compensa tutte e tre le tabelle' => sub {
@@ -305,6 +413,7 @@ subtest 'errore dopo inserimento doppie compensa tutte e tre le tabelle' => sub 
 subtest 'vincolo SQL sulle doppie dopo una scrittura parziale non lascia nuovi dati' => sub {
     reset_tables();
     $admin->do(q{INSERT INTO flay (row_id,flay,data,ora) VALUES (42,'OLD0001','2026-02-02','12:00:00')});
+    $admin->do(q{INSERT INTO battute (flay_id,ora) VALUES (42,'12:00:00')});
     $admin->do(q{INSERT INTO battute_doppie (flay_id,ora) VALUES (42,'12:00:00')});
     $admin->do('ALTER TABLE battute_doppie ADD UNIQUE KEY test_unique (flay_id,ora)');
     my @before = map { rows($_) } qw(flay battute battute_doppie);
@@ -322,6 +431,7 @@ subtest 'InnoDB conferma o annulla anche le battute doppie nella stessa transazi
         reset_tables();
         $admin->do("ALTER TABLE $_ ENGINE=InnoDB") for qw(flay battute battute_doppie);
         $admin->do(q{INSERT INTO flay (row_id,flay,data,ora) VALUES (42,'OLD0001','2026-02-02','12:00:00')});
+        $admin->do(q{INSERT INTO battute (flay_id,ora) VALUES (42,'12:00:00')});
         $input->child('LIML.OUT')->spew(record() . record() . record('OLD0001'));
         my $db = connection();
         my $load = MyISAMTestLoader->new(connect_db => sub (@) { $db->db }, fail_after_merge => $fail);
@@ -329,16 +439,16 @@ subtest 'InnoDB conferma o annulla anche le battute doppie nella stessa transazi
         if ($fail) {
             like "$@", qr/Errore dopo unione/, 'errore finale preservato';
             is scalar @{rows('flay')}, 1, 'nuova traccia annullata';
-            is_deeply rows('battute'), [];
+            is scalar @{rows('battute')}, 1, 'battuta preesistente conservata';
             is_deeply rows('battute_doppie'), [], 'doppie annullate';
             $db->disconnect;
         } else {
             ok $result->{success};
-            is_deeply $result->{data}, {tracks => 1, hits => 3, duplicate_tracks => 2, duplicate_hits => 2, skipped_tracks => 0};
+            is_deeply $result->{data}, {tracks => 1, hits => 3, duplicate_tracks => 2, duplicate_hits => 2, skipped_tracks => 0, repaired_tracks => 0};
             is scalar @{rows('flay')}, 2;
-            is scalar @{rows('battute')}, 1;
+            is scalar @{rows('battute')}, 2;
             is scalar @{rows('battute_doppie')}, 2;
-            is rows('battute_doppie')->[0][2], rows('battute')->[0][2], 'duplicato interno associato alla traccia nuova';
+            is rows('battute_doppie')->[0][2], rows('battute')->[-1][2], 'duplicato interno associato alla traccia nuova';
             is rows('battute_doppie')->[1][2], 42, 'duplicato live associato alla traccia esistente';
         }
     }

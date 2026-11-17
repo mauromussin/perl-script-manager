@@ -14,6 +14,7 @@ has locked => 0;
 has publishing => 0;
 has published => 0;
 has reused_tracks => 0;
+has repaired_tracks => 0;
 has diverted_hits => 0;
 has columns => sub { {} };
 has schemas => sub { {} };
@@ -163,7 +164,7 @@ sub prepare ($self) {
         $self->db->do('ALTER TABLE ' . $self->table($role) . ' AUTO_INCREMENT = 1');
     }
     $self->db->do('CREATE TABLE ' . $self->table('track_map')
-        . ' (local_id INT UNSIGNED PRIMARY KEY, live_id INT UNSIGNED NOT NULL) ENGINE=MyISAM');
+        . ' (local_id INT UNSIGNED PRIMARY KEY, live_id INT UNSIGNED NOT NULL, has_hits TINYINT NOT NULL) ENGINE=MyISAM');
     $self->ctx->log(info => 'Staging MyISAM creato: validazione senza scrivere in flay, battute e battute_doppie',
         operation => 'myisam_staging', journal => $self->names->{state});
     return $self;
@@ -175,7 +176,8 @@ sub _range ($self, $table) {
     my ($next) = $self->db->selectrow_array(
         'SELECT AUTO_INCREMENT FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?',
         undef, $table);
-    my ($size, $count) = $self->db->selectrow_array('SELECT MAX(row_id), COUNT(*) FROM ' . $self->table($table));
+    my $filter = $table eq 'flay' ? ' WHERE row_id NOT IN (SELECT local_id FROM ' . $self->table('track_map') . ')' : '';
+    my ($size, $count) = $self->db->selectrow_array('SELECT MAX(row_id), COUNT(*) FROM ' . $self->table($table) . $filter);
     ScriptManager::Exception->throw('mysql_staging_empty', "Staging $table vuoto o contatore MySQL non disponibile")
         unless defined $count && defined $next;
     my $offset = $last > $next - 1 ? $last : $next - 1;
@@ -193,36 +195,45 @@ sub _range ($self, $table) {
 sub _existing_tracks ($self) {
     my $stage = $self->table('flay');
     my $map = $self->table('track_map');
-    $self->db->do("INSERT INTO $map (local_id, live_id) SELECT $stage.row_id, flay.row_id "
+    $self->db->do("INSERT INTO $map (local_id, live_id, has_hits) SELECT $stage.row_id, flay.row_id, "
+        . 'EXISTS (SELECT 1 FROM battute WHERE battute.flay_id = flay.row_id) '
         . "FROM $stage INNER JOIN flay ON $stage.flay = flay.flay "
         . "AND $stage.data = flay.data AND $stage.ora = flay.ora");
     my ($count) = $self->db->selectrow_array("SELECT COUNT(*) FROM $map");
     $self->reused_tracks($count);
     return unless $count;
+    my ($repaired) = $self->db->selectrow_array("SELECT COUNT(*) FROM $map WHERE has_hits = 0");
+    $self->repaired_tracks($repaired);
     my $hits = $self->table('battute');
     my @columns = grep { $_ ne 'row_id' } @{$self->columns->{battute}};
     my $fields = join ', ', map { $self->db->quote_identifier($_) } @columns;
     my ($diverted) = $self->db->selectrow_array(
-        "SELECT COUNT(*) FROM $hits WHERE flay_id IN (SELECT local_id FROM $map)");
+        "SELECT COUNT(*) FROM $hits WHERE flay_id IN (SELECT local_id FROM $map WHERE has_hits = 1)");
     $self->diverted_hits($diverted);
     $self->db->do('INSERT INTO ' . $self->table('battute_doppie') . " ($fields) "
-        . "SELECT $fields FROM $hits WHERE flay_id IN (SELECT local_id FROM $map) ORDER BY row_id");
-    $self->db->do("DELETE FROM $hits WHERE flay_id IN (SELECT local_id FROM $map)");
-    $self->db->do("DELETE FROM $stage WHERE row_id IN (SELECT local_id FROM $map)");
-    $self->ctx->log(warning => "$count tracce gia presenti nel database: $diverted battute deviate in battute_doppie",
-        operation => 'myisam_existing_tracks');
+        . "SELECT $fields FROM $hits WHERE flay_id IN (SELECT local_id FROM $map WHERE has_hits = 1) ORDER BY row_id");
+    $self->db->do("DELETE FROM $hits WHERE flay_id IN (SELECT local_id FROM $map WHERE has_hits = 1)");
+    $self->ctx->log(warning => ($count - $repaired) . " tracce gia presenti con battute: $diverted battute deviate in battute_doppie",
+        operation => 'myisam_existing_tracks') if $count > $repaired;
 }
 
-sub _snapshot ($self, $airports) {
+sub _snapshot ($self, $airports, $merge) {
+    return unless $merge || $self->repaired_tracks;
     my @codes = sort keys %$airports;
     my $placeholders = join ',', ('?') x @codes;
+    my $condition = 'row_id IN (SELECT live_id FROM ' . $self->table('track_map') . ' WHERE has_hits = 0)';
+    my @values;
+    if ($merge) {
+        $condition .= ' OR (ora < ? AND validation_fl IS NULL '
+            . "AND (airport_dep IN ($placeholders) OR airport_arr IN ($placeholders)))";
+        @values = ('00:10:00', @codes, @codes);
+    }
     $self->db->do('INSERT INTO ' . $self->table('undo_flay') . ' (' . $self->_fields('flay') . ') '
-        . 'SELECT ' . $self->_fields('flay') . ' FROM flay WHERE ora < ? AND validation_fl IS NULL '
-        . "AND (airport_dep IN ($placeholders) OR airport_arr IN ($placeholders))", undef, '00:10:00', @codes, @codes);
+        . 'SELECT ' . $self->_fields('flay') . " FROM flay WHERE $condition", undef, @values);
     $self->db->do('INSERT INTO ' . $self->table('undo_battute') . ' (' . $self->_fields('battute') . ') '
         . 'SELECT ' . $self->_fields('battute') . ' FROM battute WHERE flay_id IN '
         . '(SELECT row_id FROM ' . $self->table('undo_flay') . ')');
-    $self->ctx->log(info => 'Salvati i dati preesistenti interessati dall\'unione a mezzanotte',
+    $self->ctx->log(info => 'Salvati i dati preesistenti interessati dal completamento tracce o dall\'unione a mezzanotte',
         operation => 'myisam_snapshot');
 }
 
@@ -232,6 +243,7 @@ sub _insert ($self, $table, $offset) {
     } @{$self->columns->{$table}};
     $self->db->do('INSERT INTO ' . $self->db->quote_identifier($table)
         . ' (' . $self->_fields($table) . ') SELECT ' . $select . ' FROM ' . $self->table($table)
+        . ($table eq 'flay' ? ' WHERE row_id NOT IN (SELECT local_id FROM ' . $self->table('track_map') . ')' : '')
         . ' ORDER BY row_id', undef, $offset);
 }
 
@@ -254,7 +266,7 @@ sub _release ($self) {
     $self->acquired(0);
 }
 
-sub publish ($self, $airports, $merge = undef) {
+sub publish ($self, $airports, $merge = undef, $complete = undef) {
     $self->ctx->check_cancel;
     $self->ctx->log(info => 'Pubblicazione MyISAM: acquisizione lock sulle tabelle live',
         operation => 'myisam_publish_lock');
@@ -274,6 +286,8 @@ sub publish ($self, $airports, $merge = undef) {
             unless defined $engine && $engine eq 'MyISAM' && encode_json($schema) eq $self->schemas->{$table};
     }
     $self->_existing_tracks;
+    die "Gestione completamento tracce senza battute non disponibile\n"
+        if $self->repaired_tracks && !$complete;
     my %offsets = map { $_ => $self->_range($_) } qw(flay battute battute_doppie);
     for my $table (qw(battute battute_doppie)) {
         $self->db->do('UPDATE ' . $self->table($table) . ' SET flay_id = COALESCE('
@@ -287,7 +301,21 @@ sub publish ($self, $airports, $merge = undef) {
         undef, 'publishing', (map { @{$self->bounds->{$_}} } qw(flay battute battute_doppie)),
         (map { $self->counts->{$_} } qw(flay battute battute_doppie)), 1);
     $self->publishing(1);
-    $self->_snapshot($airports) if $merge;
+    $self->_snapshot($airports, $merge);
+    if ($self->repaired_tracks) {
+        my $stage = $self->table('flay');
+        my $map = $self->table('track_map');
+        my $fields = join ', ', map { "$stage." . $self->db->quote_identifier($_) }
+            qw(flay data ora aircraft airport_dep airport_arr flay_operation data_ora_italy);
+        my $rows = $self->db->selectall_arrayref(
+            "SELECT $map.live_id, $fields FROM $stage INNER JOIN $map ON $stage.row_id = $map.local_id "
+            . "WHERE $map.has_hits = 0 ORDER BY $stage.row_id");
+        for my $row (@$rows) {
+            $self->ctx->check_cancel;
+            my ($id, @track) = @$row;
+            $complete->($id, \@track);
+        }
+    }
     $self->ctx->log(info => 'Inserimento delle tracce validate nelle tabelle live', operation => 'myisam_publish_tracks');
     $self->_insert('flay', $offsets{flay});
     $self->ctx->check_cancel;

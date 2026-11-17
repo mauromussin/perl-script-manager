@@ -159,8 +159,22 @@ le battute in `battute`. Le occorrenze successive riusano il suo `row_id` e
 destinano tutte le proprie battute a `battute_doppie`, senza cambiare il
 nome del volo, sostituire i metadati o unire automaticamente le osservazioni.
 La regola vale nello stesso OUT, tra i file selezionati e per tracce gia
-presenti nel database. Una traccia preesistente mantiene anche i suoi flag
-di validazione; l'eventuale unione a mezzanotte resta una fase separata.
+presenti nel database che hanno almeno una riga in `battute`.
+
+**Eccezione: traccia esistente senza battute principali.** La prima occorrenza
+valida nell'OUT riusa il `row_id` e inserisce le battute in `battute`, anche
+se esistono righe in `battute_doppie`. In `flay` vengono completati soltanto
+i campi NULL, vuoti o composti da spazi tra `aircraft`, `airport_dep`,
+`airport_arr`, `flay_operation`, `data_ora_italy`, e soltanto se l'OUT fornisce
+un valore non vuoto. Non vengono sovrascritti valori gia presenti, nemmeno
+se diversi dall'OUT. Se non ci sono campi da completare non viene eseguito
+alcun UPDATE dei metadati.
+Chiave, ID e altri campi restano invariati, inclusi i flag di validazione
+anche per tracce gia validate o marcate `M`. L'eventuale unione a mezzanotte
+resta una fase separata con le sue regole; completare aeroporto e operazione
+puo rendere una traccia non validata idonea al merge.
+Le occorrenze successive nello stesso caricamento vanno in `battute_doppie`,
+non riempiono nuovamente la tabella principale.
 
 Il primo record dipende dall'ordine di lettura: file ordinati per percorso
 e righe nell'ordine originale. I duplicati nello staging producono WARNING
@@ -168,7 +182,10 @@ con file completo, riga e chiave; quelli individuati nel database durante
 la pubblicazione MyISAM producono un WARNING riepilogativo.
 Il risultato contiene `tracks` (nuove tracce), `hits` (battute complessive),
 `duplicate_tracks` (record associati a una traccia gia individuata) e
-`duplicate_hits` (battute destinate a `battute_doppie`).
+`duplicate_hits` (battute destinate a `battute_doppie`) e `repaired_tracks`
+(tracce preesistenti che hanno ricevuto le prime battute principali).
+I completamenti sono registrati a livello INFO con ID e campi aggiornati,
+oppure con l'indicazione di metadati invariati, e riepilogati nell'esito.
 
 Le righe con intestazione completa di 34 caratteri e terminatore LF/CRLF,
 ma senza battute, vengono ignorate prima di inserire la traccia. Ogni scarto
@@ -202,11 +219,15 @@ Per MyISAM:
    gli altri client devono attendere. Gli identificatori vengono rimappati e
    gli intervalli e i conteggi delle nuove righe sono registrati prima delle
    scritture live. Sotto gli stessi lock vengono individuate le tracce gia
-   presenti: le loro battute passano dallo staging normale a quello delle
-   doppie e ricevono il `flay_id` esistente, senza inserire una nuova traccia.
+   presenti e la presenza di battute collegate: solo quelle gia provviste
+   di battute vengono deviate nello staging delle doppie. Quelle prive di
+   battute mantengono lo staging principale. Entrambe ricevono il `flay_id`
+   esistente, senza inserire una nuova traccia.
 4. Se richiesta, l'unione a mezzanotte mantiene il comportamento esistente,
    comprese le tracce preesistenti. Prima delle modifiche ne vengono salvati
    i record e le battute interessate, senza copiare tutto lo storico.
+   Anche senza merge, i record `flay` da completare vengono salvati prima
+   degli UPDATE; in caso di errore vengono ripristinati insieme ai flag.
 5. Errori, timeout o annullamenti durante la pubblicazione attivano una
    compensazione sotto gli stessi lock: rimozione delle sole nuove righe per
    `row_id` e ripristino dei record preesistenti salvati. Non viene usato un
