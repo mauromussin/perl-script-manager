@@ -120,6 +120,33 @@ procedures:
       properties:
         database: *runway_database
         airport: *runway_airport
+  - code: assegna_sid
+    name: 07-assegna_sid
+    description: >-
+      Assegna le SID ai decolli con pista, secondo la revisione 2.2 dal_2015_corr.
+      Intervallo su data_ora_arr: senza date considera tutti i giorni.
+      Salta i giorni gia completati salvo Sovrascrivi, che ricalcola solo le SID.
+      AutoCommit: errori e annullamenti non annullano le scritture gia eseguite.
+    enabled: true
+    handler_class: ScriptManager::Command::AssegnaSID
+    execution_mode: async
+    timeout_seconds: 3600
+    exclusive: true
+    retention_days: 7
+    parameter_schema:
+      type: object
+      required: [database, airport]
+      properties:
+        database: *runway_database
+        airport:
+          type: string
+          title: Aeroporto
+          enum: [LIMC, LIML, LIME]
+          x-enum-labels:
+            LIMC: Milano Malpensa
+            LIML: Milano Linate (pista principale)
+            LIME: Bergamo Orio al Serio
+          x-order: 2
   - code: example_echo
     name: Esempio - eco con file di output
     description: >-

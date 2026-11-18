@@ -153,7 +153,7 @@ Gli script originali restano invariati.
 
 Come nel legacy, le scritture sono in AutoCommit: cancellazione o errore non
 annullano gli aggiornamenti gia eseguiti. Verificare i log e i dati prima di
-rieseguire un'elaborazione interrotta. Il blocco condiviso dei comandi 03-06
+rieseguire un'elaborazione interrotta. Il blocco condiviso dei comandi 03-07
 impedisce modifiche concorrenti sullo stesso database; non protegge dai
 caricamenti 02 o da processi esterni, da non avviare contemporaneamente.
 
@@ -194,13 +194,40 @@ estremi richiesti interrompono il comando prima del salvataggio.
 Nessuna traccia da elaborare e un esito positivo senza scritture.
 AutoCommit non consente rollback dopo errori o annullamenti durante
 il salvataggio. Non avviare contemporaneamente altri passaggi sullo stesso
-database: 03-06 condividono un blocco per database, ma 02 e processi esterni
+database: 03-07 condividono un blocco per database, ma 02 e processi esterni
 non partecipano a questo blocco.
 Gli script legacy restano invariati.
 
-## Intervallo temporale e sovrascrittura: 03-06
+## Assegnazione SID: 07
 
-I quattro form espongono **Dal giorno**, **Al giorno** (estremi inclusi)
+Il comando `assegna_sid` usa la variante **2.2 dal_2015_corr**, scelta
+esplicitamente come riferimento (file modificato nel 2026), non la variante
+Malpensa 2025 con CAM/SUD. Eseguire dopo 06:
+
+```bash
+perl bin/procedure run assegna_sid --database radar_test --airport LIMC --date-from 2026-11-01 --date-to 2026-11-02
+```
+
+Supporta `LIMC`, `LIML`, `LIME`; LIPO non e implementato nella variante
+scelta. Richiede decolli con `validation_bt > 0`, pista non NULL e,
+normalmente, SID NULL. Non filtra le tracce per aeroporto: il database
+deve corrispondere al contesto scelto. Usa solo battute `Y`, ordinate per
+`time_italy, row_id`, salta la prima e assegna la prima SID incontrata.
+Mantiene regioni, precedenze e soglie del riferimento; corregge il refuso
+`B220D` in `B220` della retta BC di SID 220 a Orio, come approvato.
+
+A Malpensa conserva il fallback 168 sulle piste 17L/17R, NA sulle altre.
+A Linate/Orio, in assenza di corrispondenze, imposta NA solo con
+`validation_bt=1`; con valori superiori lascia NULL, come il legacy.
+Non modifica pista, stati delle tracce o classificazioni delle battute.
+Sovrascrivi ricalcola solo le SID dei decolli selezionati, anche quelle
+gia presenti. Scritture e riepilogo, compresi gli esiti NA, non escono
+dai giorni selezionati non saltati. Analisi, salvataggio, riepilogo e
+conclusione seguono lo stesso schema degli altri comandi.
+
+## Intervallo temporale e sovrascrittura: 03-07
+
+I cinque form espongono **Dal giorno**, **Al giorno** (estremi inclusi)
 e **Sovrascrivi e azzera i risultati dipendenti**, disattivato per default.
 Le date sono facoltative ma vanno indicate entrambe: senza date si
 considerano tutti i giorni del database. Sono disponibili anche da CLI/API
@@ -211,10 +238,12 @@ perl bin/procedure run valida_tracce --database radar_test --airport LIME --date
 perl bin/procedure run valida_battute --database radar_test --date-from 2026-11-01 --date-to 2026-11-02 --overwrite
 ```
 
-Il giorno e quello di `flay.data_ora_italy`, non `data` UTC ne
-`data_ora_arr` calcolata da 04. Una traccia selezionata e elaborata con
+Per 03-06 il giorno e quello di `flay.data_ora_italy`, non `data` UTC.
+**07 usa invece `flay.data_ora_arr`, come il relativo legacy**, per scelta
+esplicita dell'utente; questo campo e calcolato da 04.
+Una traccia selezionata e elaborata con
 tutte le sue battute, anche se attraversa mezzanotte. Tracce senza data
-locale sono escluse con conteggio nei log; le tracce unite (`M`) non
+nel campo di riferimento sono escluse con conteggio nei log; le tracce unite (`M`) non
 vengono toccate. Selezioni, aggiornamento date, reset e riepiloghi
 rispettano i soli giorni selezionati e non saltati.
 
@@ -236,6 +265,7 @@ La sovrascrittura ricalcola il passaggio richiesto e azzera i dati dipendenti:
 | 04 | Conserva l'esito di 03, ricalcola battute e date; azzera pista e SID |
 | 05 | Ripristina le battute `X` a `Y`, conserva l'esito di 04; ricalcola pista/SID degli arrivi |
 | 06 | Conserva l'esito di 04; azzera pista/SID dei decolli e ricalcola la pista |
+| 07 | Ricalcola solo la SID dei decolli, senza modificare pista, validazioni o battute |
 
 Per 04 sono ricalcolabili gli esiti `Y/L/D/P`, non gli scarti `N` di 03.
 Per 05/06 sono ricalcolabili le tracce validate da 04 e quelle invalidate
@@ -247,7 +277,12 @@ Il reset riguarda questi stati, date, pista e SID: non annulla modifiche
 alle coordinate/quote eventualmente eseguite da altri script legacy.
 
 Ricalcolare 03 invalida anche lo storico di 04/05/06; ricalcolare 04 quello
-di 05/06. 05 e 06 sono indipendenti. L'invalidazione precede gli UPDATE:
+di 05/06. 05 e 06 sono indipendenti; 07 dipende da 06 e dalle validazioni.
+Per 03/04/06 si invalida anche lo storico di 07 nei giorni `data_ora_arr`
+dei decolli interessati, che possono differire dai giorni locali scelti.
+Per 03/04 si considerano anche i giorni delle rispettive battute: 04 puo
+spostare la data calcolata dopo la riclassificazione. 05 non invalida 07.
+L'invalidazione precede gli UPDATE:
 un errore non lascia uno storico che faccia saltare risultati ormai
 parziali. Le scritture MySQL restano in AutoCommit: dopo un'interruzione
 verificare i log e rilanciare con Sovrascrivi. Le registrazioni giornaliere
@@ -256,7 +291,7 @@ sono valide solo se termina con successo l'intera esecuzione richiesta.
 La migrazione PostgreSQL viene applicata automaticamente all'avvio
 aggiornato di app/worker; non vengono aggiunte tabelle ai database radar.
 
-## Avanzamento dei comandi 03-06
+## Avanzamento dei comandi 03-07
 
 La barra include tutte le fasi: 0-50% analisi delle tracce, 50-99% salvataggio
 nel database, 99% riepilogo finale e 100% al termine del comando.

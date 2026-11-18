@@ -11,6 +11,7 @@ use ScriptManager::Command::ValidaTracce;
 use ScriptManager::Command::ValidaBattute;
 use ScriptManager::Command::TrovaPistaAtterraggi;
 use ScriptManager::Command::TrovaPistaDecolli;
+use ScriptManager::Command::AssegnaSID;
 
 plan skip_all => 'Richiede TEST_ONLINE e TEST_MYSQL=1'
     unless TestHelper::online() && ($ENV{TEST_MYSQL} // '') eq '1';
@@ -83,7 +84,8 @@ for my $id (1 .. 8) {
 }
 
 my %classes = (3 => 'ScriptManager::Command::ValidaTracce', 4 => 'ScriptManager::Command::ValidaBattute',
-    5 => 'ScriptManager::Command::TrovaPistaAtterraggi', 6 => 'ScriptManager::Command::TrovaPistaDecolli');
+    5 => 'ScriptManager::Command::TrovaPistaAtterraggi', 6 => 'ScriptManager::Command::TrovaPistaDecolli',
+    7 => 'ScriptManager::Command::AssegnaSID');
 my $target = join ':', lc($ENV{MYSQL_HOST}), $ENV{MYSQL_PORT} // 3306, $schema;
 my $last_id;
 sub run_stage ($stage, %extra) {
@@ -237,12 +239,82 @@ subtest '03 sovrascrive anche scarti precedenti, 04 conserva gli scarti di 03' =
         'rimuove le classificazioni A obsolete';
 };
 
+subtest '07 usa data_ora_arr, preserva le SID senza overwrite e limita anche NA' => sub {
+    for my $id (10 .. 18) {
+        my $local_date = $id == 10 ? '2026-11-04 12:00:00' : $id == 18 ? undef : '2026-11-05 12:00:00';
+        my $arrival_date = $id == 10 ? '2026-11-05 00:00:00' : $id == 11 ? '2026-11-05 23:59:59'
+            : $id == 12 ? '2026-11-06 00:00:00' : $id == 14 ? undef : '2026-11-05 12:00:00';
+        $admin->do('INSERT INTO flay (row_id, flay_operation, data_ora_italy, data_ora_arr, validation_fl, validation_bt, pista, sid) '
+            . 'VALUES (?, ?, ?, ?, ?, ?, ?, ?)', undef, $id, $id == 13 ? 'A' : 'D',
+            $local_date, $arrival_date, $id == 17 ? 'M' : 'Y', $id == 15 ? 2 : 1,
+            $id == 15 || $id == 16 ? '29' : '11', $id == 11 ? 'KEEP' : undef);
+        for my $i (0 .. 2) {
+            $admin->do('INSERT INTO battute (flay_id, time_italy, X_m, Y_m, H_m, validation) VALUES (?, ?, ?, ?, ?, ?)',
+                undef, $id, sprintf('2026-11-05 12:00:%02d', $i), 100 * $i, 0, 300, 'Y');
+        }
+    }
+    $admin->do('DELETE FROM battute WHERE flay_id = 16');
+    for my $hit (['2026-11-05 12:00:02', 1546520, 5057500], ['2026-11-05 12:00:01', 0, 0]) {
+        $admin->do('INSERT INTO battute (flay_id, time_italy, X_m, Y_m, H_m, validation) VALUES (?, ?, ?, ?, ?, ?)',
+            undef, 16, @$hit, 1000, 'Y');
+    }
+    my $r = run_stage(7, date_from => '2026-11-05', date_to => '2026-11-05');
+    is_deeply [@{$r->{data}}{qw(tracks assigned unassigned)}], [4, 3, 1];
+    is track_state(10)->[3], '150', 'data arrivo inclusa anche con data locale fuori intervallo';
+    is track_state(11)->[3], 'KEEP', 'SID esistente preservata senza overwrite';
+    is track_state(12)->[3], undef, 'escluso il giorno successivo anche se data locale nel range';
+    is track_state(13)->[3], undef, 'nessun fallback NA sugli arrivi';
+    is track_state(14)->[3], undef, 'data_ora_arr mancante esclusa';
+    is track_state(15)->[3], undef, 'bt>1 senza match rimane NULL come nel legacy';
+    is track_state(16)->[3], '267', 'salta la prima battuta cronologica, non la prima inserita';
+    is track_state(17)->[3], undef, 'M preservata';
+    is track_state(18)->[3], '150', 'data locale assente non esclude una data_ora_arr valida';
+    $r = run_stage(7, date_from => '2026-11-05', date_to => '2026-11-05');
+    is_deeply $r->{data}{days_skipped}, ['2026-11-05'];
+    run_stage(7, date_from => '2026-11-05', date_to => '2026-11-05', overwrite => 1);
+    is_deeply [@{track_state(11)}[0 .. 3]], ['Y', 1, '11', '150'], 'overwrite modifica solo SID';
+};
+
+subtest '07 valida prima del reset e non registra successo dopo errori di scrittura' => sub {
+    my $before = $admin->selectall_arrayref('SELECT row_id, sid FROM flay ORDER BY row_id');
+    $admin->do('UPDATE battute SET H_m = NULL WHERE flay_id = 16');
+    eval { run_stage(7, date_from => '2026-11-05', date_to => '2026-11-05', overwrite => 1) };
+    ok(ScriptManager::Exception->caught($@, 'invalid_hit'), 'dati non validi fermano prima di azzerare SID');
+    is_deeply $admin->selectall_arrayref('SELECT row_id, sid FROM flay ORDER BY row_id'), $before;
+    $admin->do('UPDATE battute SET H_m = 1000 WHERE flay_id = 16');
+    eval { run_stage(7, date_from => '2026-11-05', date_to => '2026-11-05', overwrite => 1, fail_write => 1) };
+    like "$@", qr/write failed after update/, 'errore dopo reset propagato';
+    is_deeply days('assegna_sid'), [], 'nessun completamento obsoleto dopo reset interrotto';
+    cmp_ok $repo->get_execution($last_id)->{progress}, '<', 100, 'nessun falso 100%';
+    run_stage(7, date_from => '2026-11-05', date_to => '2026-11-05', overwrite => 1);
+    is track_state(11)->[3], '150', 'ricalcolo dopo errore riuscito';
+};
+
+subtest '06 e 04 invalidano 07 sulla data dei decolli, anche se cambia giorno' => sub {
+    run_stage(6, date_from => '2026-11-04', date_to => '2026-11-04', overwrite => 1);
+    is_deeply days('assegna_sid'), [], '06 sul giorno locale 4 invalida lo storico SID del giorno 5';
+    run_stage(7, date_from => '2026-11-05', date_to => '2026-11-05');
+    $repo->complete_validation_days($target, 'assegna_sid', ['2026-11-07'], $last_id);
+    for (1 .. 5) {
+        $admin->do('INSERT INTO battute (flay_id, time_italy, X_m, Y_m, H_m, validation) VALUES (?, ?, ?, ?, ?, ?)',
+            undef, 10, '2026-11-07 12:00:00', 0, 0, 300, 'Y');
+    }
+    my $hits = $admin->selectcol_arrayref('SELECT row_id FROM battute WHERE flay_id = 10 ORDER BY row_id');
+    for my $i (0 .. $#$hits) {
+        $admin->do('UPDATE battute SET time_italy = ?, X_m = ? WHERE row_id = ?',
+            undef, sprintf('2026-11-07 12:00:%02d', $i), 100 * $i, $hits->[$i]);
+    }
+    run_stage(4, date_from => '2026-11-04', date_to => '2026-11-04', overwrite => 1);
+    is track_state(10)->[4], '2026-11-07 12:00:00', '04 sposta la data calcolata al giorno 7';
+    is_deeply days('assegna_sid'), [], 'invalidati sia il vecchio giorno 5 sia quello nuovo 7';
+};
+
 subtest 'form web: due selettori data e sovrascrittura non preselezionata' => sub {
     my $root = $app->home;
     local $ENV{MRT_CONFIG_FILE} = $root->child('config', 'MRT.example.json')->to_string;
     my $web = TestHelper::mojo(paths => {procedures_file => $root->child('config', 'procedures.yml')->to_string});
     Log::Any::Adapter->set('Null');
-    for my $code (qw(valida_tracce valida_battute trova_pista_atterraggi trova_pista_decolli)) {
+    for my $code (qw(valida_tracce valida_battute trova_pista_atterraggi trova_pista_decolli assegna_sid)) {
         $web->get_ok("/procedures/$code")->status_is(200)
             ->element_exists('input[type=date][name=date_from]')
             ->element_exists('input[type=date][name=date_to]')

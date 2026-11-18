@@ -47,7 +47,7 @@ sub lock_validation_target ($self, $target) {
     my $tx = $db->begin;
     my $locked = $db->query('select pg_try_advisory_xact_lock(hashtextextended(?, 0)) as locked',
         "validation:$target")->hash->{locked};
-    ScriptManager::Exception->throw('validation_busy', 'Un altro comando 03-06 sta operando sullo stesso database')
+    ScriptManager::Exception->throw('validation_busy', 'Un altro comando 03-07 sta operando sullo stesso database')
         unless $locked;
     return {db => $db, tx => $tx};
 }

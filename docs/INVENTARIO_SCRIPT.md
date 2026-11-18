@@ -32,7 +32,8 @@ esclusivamente sul codice reale (vedi `docs/ANALISI_APPLICAZIONE.md`, sezione 7)
 
 L'inventario iniziale di acquisizione è in `legacy/README.md`. L'analisi seguente copre
 il gruppo `02-carica*.pl`, le due varianti `03-valida_tracce*` e
-`04-valida_battute_1.0.pl` e gli script piste `05`/`06`; gli altri script
+`04-valida_battute_1.0.pl`, gli script piste `05`/`06` e il gruppo SID `07`;
+gli altri script
 non descritti qui restano da inventariare.
 
 ## Gruppo 02-carica*
@@ -117,7 +118,7 @@ procedure eseguibili dell'applicazione.
   esplicito, successo implicito se arriva in fondo. Durata tipica e
   consumo non misurati; una lettura delle battute e UPDATE per traccia.
 - Modulo di destinazione: `ScriptManager::Command::ValidaTracce`.
-  Parametri `database` e `airport`, piu intervallo/sovrascrittura comuni a 03-06;
+  Parametri `database` e `airport`, piu intervallo/sovrascrittura comuni a 03-07;
   credenziali server tramite `MYSQL_*`,
   scelte aeroporto da `MRT_CONFIG_FILE`/`config/local/MRT.json`.
   Il controllo attuale di `run` ammette solo LIME e LIPO, anche se lo
@@ -183,7 +184,7 @@ procedure eseguibili dell'applicazione.
   Non costituisce esecuzione integrale del legacy ne certificazione MySQL reale.
 - Modulo di destinazione: `ScriptManager::Command::ValidaBattute`.
 - Integrazione: `valida_battute`, asincrono/esclusivo, parametro `database`,
-  intervallo/sovrascrittura comuni a 03-06, credenziali server.
+  intervallo/sovrascrittura comuni a 03-07, credenziali server.
   Completamento date e riepilogo sono limitati ai giorni selezionati non
   saltati, diversamente dal riepilogo globale legacy.
   Analisi 0-50%, salvataggio 50-99% (UPDATE delle battute
@@ -248,7 +249,7 @@ procedure eseguibili dell'applicazione.
   degli UPDATE; dati numerici non validi o geometria mancante/degenere
   interrompono prima delle scritture. Analisi 0-50%, salvataggio 50-99%,
   riepilogo 99%, concluso 100% dopo disconnect. AutoCommit senza rollback;
-  blocco condiviso 03-06 sullo stesso server/porta/database.
+  blocco condiviso 03-07 sullo stesso server/porta/database.
 
 ## 06-trova_pista_decolli_1.1.pl
 
@@ -293,18 +294,78 @@ procedure eseguibili dell'applicazione.
   nel riepilogo, ora limitato ai giorni selezionati non saltati.
   Non filtra le tracce per aeroporto.
 
-## Controlli temporali comuni dei comandi migrati 03-06
+## Gruppo 07-assegna_sid*
+
+- Varianti trovate: 2.1, 2.2 base, dal_2014, dal_2015, dal_2015_corr,
+  corr+lipo, orio_sid044, corr_sperimMXP2024 e corr_MXP_da12giu2025.
+  La variante MXP 2025 dichiara revisione 14/07/2025 (CAM/SUD); `corr`
+  ha modifica filesystem 20/05/2026 ma mantiene le regole precedenti.
+  Per scelta esplicita dell'utente, riferimento della migrazione:
+  `legacy/scripts/07-assegna_sid_2.2_dal_2015_corr.pl`.
+- Stato: migrato in `ScriptManager::Command::AssegnaSID`, comando
+  asincrono/esclusivo `assegna_sid`, geometria in `ScriptManager::Service::SIDGeometry`.
+  LIMC/LIML/LIME implementati; LIPO termina con errore. Non si combinano
+  regole delle altre varianti (LIPO e CAM/SUD restano esclusi).
+- Input legacy: host, database, aeroporto, date iniziale/finale, utente
+  e password in chiaro; accesso DBI/MySQL, nessun processo esterno.
+  Seleziona decolli, validation_bt>0, pista non NULL e sid NULL,
+  intervallo inclusivo su `data_ora_arr` (campo confermato dall'utente).
+  Non filtra le tracce per aeroporto: database relativo al contesto scelto.
+- Algoritmo: legge solo battute Y senza ORDER BY e salta la prima.
+  Cerca la prima battuta che soddisfa una regione SID, nell'ordine dei
+  test originali. Quote assolute e bordi strettamente esclusi.
+  LIMC: 070/071/358 per 35R; 280/310/320 per 35L; 294/038 per 17L/17R,
+  quota <3000 m; fallback 168 sulle piste sud, NA altrove.
+  LIML: SRN5C/NIKMO/TZO5C/DORIN/PIKOT per 36R, PIA5D/SSUD per 18L,
+  quota <3500 m. LIME: 267/220/044 per 29 a quota <3500 m; 150 per 11
+  senza condizioni geometriche, pur richiedendo una seconda battuta Y.
+- Effetti: aggiorna solo `flay.sid`, senza invalidare tracce o battute.
+  Il fallback globale NA usa bt=1 e pista non NULL, senza filtro su
+  operazione o date: puo modificare righe estranee alla selezione.
+  Esiti non trovati con bt>1 rimangono NULL per LIML/LIME.
+  Riepilogo globale decolli bt=1; log Windows in append, apertura non
+  verificata. AutoCommit senza rollback; errori DB/nessuna traccia con die.
+- Difetti: denominatore della retta BC della SID 220 usa `$B220D[0]`
+  mai definito (coercizione a zero); altre variabili inesistenti sono
+  usate solo nelle stampe. SQL interpolato, ordinamento non deterministico.
+  Durata e consumo non misurati; una lettura delle battute per traccia.
+- Decisioni approvate: correggere B220D in B220, ordinare per time_italy e
+  row_id, limitare tutte le scritture/report ai decolli dei giorni scelti;
+  mantenere intervallo su data_ora_arr, skip giornaliero e sovrascrittura.
+  Test di caratterizzazione in `t/unit/assegna_sid.t`, DB simulato,
+  nessuna scrittura operativa; correzione geometrica confrontata a parte.
+- Integrazione verificata: database/aeroporto e controlli comuni date,
+  skip e overwrite, con riferimento a `data_ora_arr`. Sovrascrittura
+  limitata alla SID dei decolli bt>0 con pista; nessun reset di pista,
+  validazioni, date o battute. Analisi completa prima degli UPDATE;
+  numerici mancanti/non finiti producono errore prima delle scritture.
+  Nessuna traccia e un successo senza modifiche, non un die.
+  Analisi 0-50%, salvataggio 50-99%, riepilogo 99%, concluso 100%
+  dopo disconnect e registrazione dello storico. AutoCommit senza rollback.
+- Confronti eseguiti: tutte le 18 regioni, soglie di quota incluse/escluse,
+  prima battuta saltata, precedenza temporale, fallback 168/NA/NULL e
+  caso discriminante per la correzione SID 220. Il centro dei vertici
+  PIA5D non e interno alle semirette legacy: preservate senza riordinarle.
+  Test runtime per scritture solo SID, errori, annullamento e progresso.
+- `t/integration/validation_window.t`: database MyISAM temporaneo e
+  schemi PostgreSQL dedicati, poi rimossi; date su data_ora_arr differenti
+  da data_ora_italy, limiti inclusivi, righe esterne/arrivi/M intatti,
+  ordinamento cronologico, SID esistenti, skip, overwrite e dipendenze.
+  Nessuna certificazione su tracce operative.
+
+## Controlli temporali comuni dei comandi migrati 03-07
 
 - `date_from` e `date_to` facoltativi ma entrambi richiesti se uno e presente,
   giorni inclusi; senza intervallo si considera l'intero database.
-  Il riferimento verificato nello schema e `flay.data_ora_italy` DATETIME:
-  non la data UTC ne la data calcolata dal comando 04. Tracce senza data
-  locale escluse con conteggio nei log; `M` preservate. Si elaborano sempre
+  03-06 usano `flay.data_ora_italy` DATETIME, non la data UTC.
+  07 usa `data_ora_arr`, come il legacy, per scelta esplicita dell'utente.
+  Tracce senza il rispettivo campo data escluse con conteggio nei log;
+  `M` preservate. Si elaborano sempre
   tutte le battute delle tracce selezionate, anche oltre mezzanotte.
 - Storico persistente PostgreSQL `validation_days`, separato per target
   MySQL e comando. Skip soltanto per giorni di esecuzioni completate con
   successo; nessuna deduzione dai soli flag esistenti o da vecchie esecuzioni
-  senza storico giornaliero. Blocco fra i quattro comandi sullo stesso target;
+  senza storico giornaliero. Blocco fra i cinque comandi sullo stesso target;
   non coordina 02 o processi esterni.
 - `overwrite` disabilitato per default: ricalcola il comando e azzera i
   risultati dipendenti, invalidando prima il relativo storico giornaliero.
@@ -312,6 +373,12 @@ procedure eseguibili dell'applicazione.
   (`Y/L/D/P`) e azzera pista/SID; 05 ripristina X->Y e ricalcola pista/SID
   arrivi; 06 azzera pista/SID decolli e ricalcola pista. Non ripristina
   coordinate/quote eventualmente alterate da script successivi.
+  07 ricalcola solo SID dei decolli con pista e bt>0.
+- Dipendenza 07: 03/04/06 invalidano lo storico SID sulle date data_ora_arr
+  dei decolli interessati, non riutilizzando le diverse date locali.
+  Per 03/04 vengono inclusi anche i giorni delle battute, per invalidare
+  preventivamente l'eventuale nuovo giorno calcolato da 04. 05 resta
+  indipendente da 07. Invalida solo lo storico, non i dati di altri giorni.
 - Per gli scarti pista P/bt0/N*, lo stato di 04 viene ricostruito dalle
   battute Y (+X per 05): 4-7 -> L, almeno 8 -> Y. Stati incoerenti con meno
   di quattro battute bloccano prima di scrivere. Analisi su dati proiettati
