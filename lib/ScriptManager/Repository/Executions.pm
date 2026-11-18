@@ -1,5 +1,6 @@
 package ScriptManager::Repository::Executions;
 use Mojo::Base -base, -signatures;
+use ScriptManager::Exception;
 
 # Mojo::Pg instance
 has 'pg';
@@ -39,6 +40,43 @@ SQL
 }
 
 # ---- executions ----------------------------------------------------------
+
+sub lock_validation_target ($self, $target) {
+    # Keep only the lock in this transaction; ledger invalidations must survive command failures.
+    my $db = $self->pg->db;
+    my $tx = $db->begin;
+    my $locked = $db->query('select pg_try_advisory_xact_lock(hashtextextended(?, 0)) as locked',
+        "validation:$target")->hash->{locked};
+    ScriptManager::Exception->throw('validation_busy', 'Un altro comando 03-06 sta operando sullo stesso database')
+        unless $locked;
+    return {db => $db, tx => $tx};
+}
+
+sub completed_validation_days ($self, $target, $code) {
+    return $self->pg->db->query(
+        'select d.day::text from validation_days d join executions e on e.id = d.execution_id '
+        . "where d.target = ? and d.procedure_code = ? and e.status = 'completed' order by d.day",
+        $target, $code)->arrays->map(sub { $_->[0] })->to_array;
+}
+
+sub invalidate_validation_days ($self, $target, $codes, $days) {
+    return unless @$days;
+    $self->pg->db->query('delete from validation_days where target = ? and procedure_code in ('
+        . join(',', ('?') x @$codes) . ') and day in (' . join(',', ('?') x @$days) . ')',
+        $target, @$codes, @$days);
+}
+
+sub complete_validation_days ($self, $target, $code, $days, $execution_id) {
+    my $db = $self->pg->db;
+    my $tx = $db->begin;
+    for my $day (@$days) {
+        $db->query('insert into validation_days (target, procedure_code, day, execution_id) values (?, ?, ?, ?) '
+            . 'on conflict (target, procedure_code, day) do update '
+            . 'set execution_id = excluded.execution_id, completed_at = now()',
+            $target, $code, $day, $execution_id);
+    }
+    $tx->commit;
+}
 
 sub create_execution ($self, %args) {
     return $self->pg->db->query(

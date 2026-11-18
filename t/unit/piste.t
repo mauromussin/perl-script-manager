@@ -1,6 +1,8 @@
 use Mojo::Base -strict, -signatures;
 use Test::More;
 use FindBin;
+use lib "$FindBin::Bin/../lib";
+use TestValidationWindow;
 use Mojo::File 'path';
 use ScriptManager::Service::RunwayGeometry;
 use ScriptManager::Command::TrovaPistaAtterraggi;
@@ -292,7 +294,7 @@ subtest 'salvataggi e avanzamento dei due comandi' => sub {
                 $db->hits->{1}[2] = [1479700, 5050200, 300, 13] if $operation eq 'D';
                 my $class = $operation eq 'A' ? 'ScriptManager::Command::TrovaPistaAtterraggi'
                     : 'ScriptManager::Command::TrovaPistaDecolli';
-                my $command = $class->new(connect_db => sub (@args) {
+                my $command = $class->new(window_class => 'TestValidationWindow', connect_db => sub (@args) {
                     Test::More::like($args[0], qr/database=radar_test;host=localhost;port=3306/, 'database selezionato');
                     return $db;
                 });

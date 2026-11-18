@@ -4,11 +4,18 @@ use Mojo::Base -base, -signatures;
 use DBI;
 use ScriptManager::Exception;
 use ScriptManager::Service::RunwayGeometry;
+use ScriptManager::Service::ValidationWindow;
 
 has [qw(logger process_runner operation)];
 has connect_db => sub { sub (@args) { DBI->connect(@args) } };
+has window_class => 'ScriptManager::Service::ValidationWindow';
+
+sub configure_schema ($class, $schema, $directory) {
+    ScriptManager::Service::ValidationWindow->configure_schema($schema);
+}
 
 sub run ($self, $ctx, $params) {
+    ScriptManager::Service::ValidationWindow->validate_params($params);
     my $operation = $self->operation;
     ScriptManager::Exception->throw('invalid_operation', 'Operazione pista non configurata')
         unless ($operation // '') =~ /\A[AD]\z/;
@@ -46,13 +53,18 @@ sub run ($self, $ctx, $params) {
             'Connessione MySQL fallita: verificare MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD e database');
     }
     my $result;
+    my $window;
     my $ok = eval {
+        $window = $self->window_class->new(db => $db, ctx => $ctx, params => $params,
+            stage => $operation eq 'A' ? 5 : 6)->prepare;
+        my ($filter, @scope_bind) = $window->filter;
         $ctx->log(info => "Assegnazione piste $operation per $airport"
             . ($operation eq 'A' ? ", revisione $revision" : ', revisione 1.1')
             . '; scritture in AutoCommit senza rollback');
         my $tracks = $db->selectcol_arrayref(
-            'SELECT row_id FROM flay WHERE flay_operation = ? AND validation_bt = ? AND pista IS NULL ORDER BY row_id',
-            undef, $operation, 1);
+            'SELECT row_id FROM flay WHERE flay_operation = ? AND '
+            . ($window->overwrite ? $window->runway_candidates : 'validation_bt = ? AND pista IS NULL')
+            . $filter . ' ORDER BY row_id', undef, $operation, ($window->overwrite ? () : (1)), @scope_bind);
         my $geometry;
         if (@$tracks) {
             my $rows = $db->selectall_arrayref(
@@ -70,8 +82,10 @@ sub run ($self, $ctx, $params) {
         for my $id (@$tracks) {
             $ctx->check_cancel;
             my $hits = $db->selectall_arrayref(
-                'SELECT X_m, Y_m, H_m, row_id FROM battute WHERE flay_id = ? AND validation = ? ORDER BY time_italy, row_id',
-                undef, $id, 'Y');
+                'SELECT X_m, Y_m, H_m, row_id FROM battute WHERE flay_id = ? AND '
+                . ($window->overwrite && $operation eq 'A' ? 'validation IN (?, ?)' : 'validation = ?')
+                . ' ORDER BY time_italy, row_id', undef, $id, 'Y',
+                ($window->overwrite && $operation eq 'A' ? ('X') : ()));
             my $plan = ScriptManager::Service::RunwayGeometry->analyze($geometry, $hits);
             $plan->{id} = $id;
             push @plans, $plan;
@@ -83,6 +97,7 @@ sub run ($self, $ctx, $params) {
         }
         my $saved = 0;
         $ctx->progress(50, 'Salvataggio: piste, stati delle tracce ed eventuali battute X');
+        $window->start_saving;
         for my $plan (@plans) {
             $ctx->check_cancel;
             for my $id (@{$plan->{excluded}}) {
@@ -109,8 +124,9 @@ sub run ($self, $ctx, $params) {
         $ctx->progress(99, 'Riepilogo finale delle piste');
         my $report = $db->selectall_arrayref(
             'SELECT pista, COUNT(*) FROM flay WHERE flay_operation = ? AND pista IS NOT NULL'
-            . ($operation eq 'D' ? ' AND sid IS NULL' : '') . ' GROUP BY pista', undef, $operation);
-        $ctx->log(info => "Riepilogo globale pista $_->[0]: $_->[1]") for @$report;
+            . ($operation eq 'D' ? ' AND sid IS NULL' : '') . $filter . ' GROUP BY pista',
+            undef, $operation, @scope_bind);
+        $ctx->log(info => "Riepilogo pista nei giorni elaborati $_->[0]: $_->[1]") for @$report;
         my $unassigned = grep { $_->{invalid} } @plans;
         $result = {
             success => 1,
@@ -128,6 +144,7 @@ sub run ($self, $ctx, $params) {
         die $error;
     }
     $db->disconnect;
+    $window->finish($result);
     $ctx->progress(100, 'Assegnazione piste conclusa');
     return $result;
 }

@@ -6,9 +6,11 @@ use Mojo::File 'path';
 use Mojo::JSON 'decode_json';
 use Log::Any ();
 use ScriptManager::Exception;
+use ScriptManager::Service::ValidationWindow;
 
 has 'logger' => sub { Log::Any->get_logger(category => 'ScriptManager::ValidaTracce') };
 has 'connect_db' => sub { sub (@args) { DBI->connect(@args) } };
+has window_class => 'ScriptManager::Service::ValidationWindow';
 
 # Configurazione aeroporti con coordinate (X_aerop, Y_aerop) e offset Y specifico se necessario
 # offset_y viene aggiunto a Y_aerop per compensare problemi storici di coordinate
@@ -31,6 +33,7 @@ sub mrt ($class, $file) {
 }
 
 sub configure_schema ($class, $schema, $directory) {
+    ScriptManager::Service::ValidationWindow->configure_schema($schema);
     my $file = $ENV{MRT_CONFIG_FILE} // $directory->child('local', 'MRT.json')->to_string;
     my $config = $class->mrt($file);
     my @airport_codes = sort keys %{$config->{airports}};
@@ -43,6 +46,7 @@ sub configure_schema ($class, $schema, $directory) {
 }
 
 sub run ($self, $ctx, $params) {
+    ScriptManager::Service::ValidationWindow->validate_params($params);
     $ctx->log(info => 'Inizio validazione tracce', operation => 'valida_tracce_start');
     
     # Validazione parametri
@@ -100,6 +104,8 @@ sub run ($self, $ctx, $params) {
     }
     
     $ctx->log(info => 'Connessione MySQL riuscita', operation => 'mysql_connected');
+    my $window = $self->window_class->new(db => $db, ctx => $ctx, params => $params, stage => 3)->prepare;
+    my ($filter, @scope_bind) = $window->filter;
     
     # Verifica tabelle necessarie
     $ctx->log(info => 'Verifica tabelle flay, battute e anagrafica.aeroporti', operation => 'mysql_schema');
@@ -143,16 +149,18 @@ sub run ($self, $ctx, $params) {
     $ctx->log(info => 'Ricerca tracce non ancora validate', operation => 'load_unvalidated_tracks');
     
     my $unvalidated_tracks = $db->selectcol_arrayref(
-        'SELECT row_id FROM flay WHERE validation_fl IS NULL ORDER BY row_id'
+        'SELECT row_id FROM flay WHERE ' . ($window->overwrite ? '1=1' : 'validation_fl IS NULL')
+        . $filter . ' ORDER BY row_id', undef, @scope_bind
     );
     
     if (!@$unvalidated_tracks) {
         $ctx->log(info => 'Nessuna traccia da validare', operation => 'no_tracks');
         $db->disconnect;
-        $ctx->progress(100, 'Nessuna traccia da validare');
-        return {success => 1, message => 'Nessuna traccia da validare', data => {
+        my $result = $window->finish({success => 1, message => 'Nessuna traccia da validare', data => {
             valid_count => 0, invalid_count => 0, total_count => 0
-        }};
+        }});
+        $ctx->progress(100, 'Nessuna traccia da validare');
+        return $result;
     }
     
     $ctx->log(info => scalar(@$unvalidated_tracks) . ' tracce da validare', operation => 'tracks_found',
@@ -210,6 +218,7 @@ sub run ($self, $ctx, $params) {
     my $saved = 0;
     my $last_percent = 50;
     $ctx->progress(50, "Salvataggio database: $saved di $total tracce");
+    $window->start_saving;
     my $saved_track = sub {
         $saved++;
         my $percent = 50 + int(49 * $saved / $total);
@@ -242,7 +251,8 @@ sub run ($self, $ctx, $params) {
     # Report finale
     $ctx->progress(99, 'Riepilogo finale della validazione');
     my $report_data = $db->selectall_arrayref(
-        'SELECT validation_fl, COUNT(*) as count FROM flay WHERE validation_fl IS NOT NULL GROUP BY validation_fl'
+        'SELECT validation_fl, COUNT(*) as count FROM flay WHERE validation_fl IS NOT NULL'
+        . $filter . ' GROUP BY validation_fl', undef, @scope_bind
     );
     
     my %counts = map { $_->[0] => $_->[1] } @$report_data;
@@ -256,9 +266,8 @@ sub run ($self, $ctx, $params) {
     );
     
     $db->disconnect;
-    $ctx->progress(100, 'Validazione completata');
     
-    return {
+    my $result = $window->finish({
         success => 1,
         message => 'Validazione completata',
         data => {
@@ -266,7 +275,9 @@ sub run ($self, $ctx, $params) {
             invalid_count => ($counts{N} // 0),
             total_count => scalar(@$unvalidated_tracks),
         }
-    };
+    });
+    $ctx->progress(100, 'Validazione completata');
+    return $result;
 }
 
 1;

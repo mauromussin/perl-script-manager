@@ -117,14 +117,16 @@ procedure eseguibili dell'applicazione.
   esplicito, successo implicito se arriva in fondo. Durata tipica e
   consumo non misurati; una lettura delle battute e UPDATE per traccia.
 - Modulo di destinazione: `ScriptManager::Command::ValidaTracce`.
-  Parametri `database` e `airport`; credenziali server tramite `MYSQL_*`,
+  Parametri `database` e `airport`, piu intervallo/sovrascrittura comuni a 03-06;
+  credenziali server tramite `MYSQL_*`,
   scelte aeroporto da `MRT_CONFIG_FILE`/`config/local/MRT.json`.
   Il controllo attuale di `run` ammette solo LIME e LIPO, anche se lo
   schema espone altri aeroporti presenti in MRT.
 - Note di migrazione: originali intatti; il comando riunisce gli offset
   LIME=-376 e LIPO=-2515, usa placeholder SQL, conta le righe lette,
   verifica la presenza dell'aeroporto e ordina le letture per row_id.
-  Il riepilogo applicativo conta tutte le tracce con validation_fl non NULL,
+  Il riepilogo applicativo conta le tracce con validation_fl non NULL nei
+  giorni selezionati e non saltati,
   diversamente dal filtro legacy su validation_bt NULL; non rappresenta
   soltanto le tracce elaborate nella singola esecuzione.
 - Verifiche: `t/unit/valida_tracce.t` copre catalogo, schema, casi di
@@ -181,7 +183,10 @@ procedure eseguibili dell'applicazione.
   Non costituisce esecuzione integrale del legacy ne certificazione MySQL reale.
 - Modulo di destinazione: `ScriptManager::Command::ValidaBattute`.
 - Integrazione: `valida_battute`, asincrono/esclusivo, parametro `database`,
-  credenziali server. Analisi 0-50%, salvataggio 50-99% (UPDATE delle battute
+  intervallo/sovrascrittura comuni a 03-06, credenziali server.
+  Completamento date e riepilogo sono limitati ai giorni selezionati non
+  saltati, diversamente dal riepilogo globale legacy.
+  Analisi 0-50%, salvataggio 50-99% (UPDATE delle battute
   in gruppi di massimo 500 ID, tracce, date), riepilogo 99%, concluso 100%
   solo dopo chiusura connessione. AutoCommit mantiene i limiti del legacy:
   nessun rollback delle scritture parziali.
@@ -230,7 +235,8 @@ procedure eseguibili dell'applicazione.
   default; selezionabili anche `1.0` e `1.1`). LIPO con 1.0 viene rifiutato
   prima della connessione. Credenziali da variabili server `MYSQL_*`.
   Log e risultato strutturato sostituiscono il report Windows; il riepilogo
-  resta globale, con conteggi separati delle tracce della singola esecuzione.
+  include solo i giorni selezionati non saltati, con conteggi separati
+  delle tracce della singola esecuzione.
 - Decisioni approvate: estremi identificati tramite `nome_pista`;
   Malpensa EST=35R/17L e OVEST=35L/17R, Linate solo 36R/18L.
   Nessun riuso di variabili fra tracce: coppie mancanti restituiscono NA
@@ -242,7 +248,7 @@ procedure eseguibili dell'applicazione.
   degli UPDATE; dati numerici non validi o geometria mancante/degenere
   interrompono prima delle scritture. Analisi 0-50%, salvataggio 50-99%,
   riepilogo 99%, concluso 100% dopo disconnect. AutoCommit senza rollback;
-  esclusiva per singolo comando, non fra fasi diverse della pipeline.
+  blocco condiviso 03-06 sullo stesso server/porta/database.
 
 ## 06-trova_pista_decolli_1.1.pl
 
@@ -284,4 +290,35 @@ procedure eseguibili dell'applicazione.
   Coppie insufficienti producono NA e invalidazione, mai coordinate zero
   o risultati ereditati. Mantiene gli offset specifici di 06 e il fetch
   anticipato legacy. Non aggiorna SID; conserva il filtro sid NULL solo
-  nel riepilogo globale. Non filtra le tracce per aeroporto.
+  nel riepilogo, ora limitato ai giorni selezionati non saltati.
+  Non filtra le tracce per aeroporto.
+
+## Controlli temporali comuni dei comandi migrati 03-06
+
+- `date_from` e `date_to` facoltativi ma entrambi richiesti se uno e presente,
+  giorni inclusi; senza intervallo si considera l'intero database.
+  Il riferimento verificato nello schema e `flay.data_ora_italy` DATETIME:
+  non la data UTC ne la data calcolata dal comando 04. Tracce senza data
+  locale escluse con conteggio nei log; `M` preservate. Si elaborano sempre
+  tutte le battute delle tracce selezionate, anche oltre mezzanotte.
+- Storico persistente PostgreSQL `validation_days`, separato per target
+  MySQL e comando. Skip soltanto per giorni di esecuzioni completate con
+  successo; nessuna deduzione dai soli flag esistenti o da vecchie esecuzioni
+  senza storico giornaliero. Blocco fra i quattro comandi sullo stesso target;
+  non coordina 02 o processi esterni.
+- `overwrite` disabilitato per default: ricalcola il comando e azzera i
+  risultati dipendenti, invalidando prima il relativo storico giornaliero.
+  03 azzera battute/stati/date/pista/SID; 04 ricalcola da esiti 03 validi
+  (`Y/L/D/P`) e azzera pista/SID; 05 ripristina X->Y e ricalcola pista/SID
+  arrivi; 06 azzera pista/SID decolli e ricalcola pista. Non ripristina
+  coordinate/quote eventualmente alterate da script successivi.
+- Per gli scarti pista P/bt0/N*, lo stato di 04 viene ricostruito dalle
+  battute Y (+X per 05): 4-7 -> L, almeno 8 -> Y. Stati incoerenti con meno
+  di quattro battute bloccano prima di scrivere. Analisi su dati proiettati
+  in memoria prima del reset, che avviene nella fase Salvataggio.
+- Test: `t/unit/validation_window.t` e `t/integration/validation_window.t`;
+  quest'ultimo richiede TEST_ONLINE e TEST_MYSQL=1, usa un database MyISAM
+  `sm_test_validation_*` e schemi PostgreSQL dedicati, poi li rimuove.
+  Verifica selezioni locali e confini giornalieri, report/date limitati,
+  skip, ricalcolo, invalidazione dipendenti, errore dopo UPDATE, blocchi
+  concorrenti e form web. Anagrafica sintetica; nessuna scrittura operativa.

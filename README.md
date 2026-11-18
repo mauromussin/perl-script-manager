@@ -136,13 +136,14 @@ Richiede solo il database: usa le stesse variabili `MYSQL_HOST`, `MYSQL_PORT`,
 `MYSQL_USER`, `MYSQL_PASSWORD` del caricamento. L'aeroporto richiesto dal legacy
 non e utilizzato e quindi non viene riproposto.
 
-Eseguire dopo `03-valida_tracce`: seleziona solo tracce con `validation_fl='Y'`
+Eseguire dopo `03-valida_tracce`: senza sovrascrittura seleziona solo tracce con `validation_fl='Y'`
 e `validation_bt IS NULL`. Classifica battute taxi (`T`), spezzate (`S`),
 non valide (`N`), valide (`Y`) o appartenenti a tracce insufficienti (`D`).
 Aggiorna anche gli stati delle tracce (`D` sotto 4 valide, `L` da 4 a 7,
 `Y` da 8) e le date mancanti `data_ora_arr`: prima battuta valida per i
 decolli, ultima per gli atterraggi. Quest'ultimo passaggio include le tracce
-gia validate, anche se non ci sono nuove tracce da analizzare.
+gia validate nei giorni selezionati e non saltati, anche se non ci sono
+nuove tracce da analizzare.
 
 Le correzioni dei difetti legacy approvate sono descritte
 nell'[inventario](docs/INVENTARIO_SCRIPT.md#04-valida_battute_10pl).
@@ -152,9 +153,9 @@ Gli script originali restano invariati.
 
 Come nel legacy, le scritture sono in AutoCommit: cancellazione o errore non
 annullano gli aggiornamenti gia eseguiti. Verificare i log e i dati prima di
-rieseguire un'elaborazione interrotta. Non eseguire contemporaneamente altri
-passaggi della pipeline sullo stesso database; l'esclusiva del catalogo
-impedisce solo esecuzioni concorrenti di questo stesso comando.
+rieseguire un'elaborazione interrotta. Il blocco condiviso dei comandi 03-06
+impedisce modifiche concorrenti sullo stesso database; non protegge dai
+caricamenti 02 o da processi esterni, da non avviare contemporaneamente.
 
 ## Assegnazione piste: 05 atterraggi e 06 decolli
 
@@ -172,14 +173,14 @@ LIPO; la 1.2 rimuove l'offset di -376 m di LIME presente nelle precedenti.
 I decolli riproducono l'unica revisione trovata, la 1.1, mantenendo i propri
 offset distinti da quelli degli atterraggi.
 
-Elaborano solo tracce della rispettiva operazione A/D con `validation_bt=1`
+Senza sovrascrittura elaborano solo tracce della rispettiva operazione A/D con `validation_bt=1`
 e `pista IS NULL`, usando le battute `Y`. Come nel legacy, **non filtrano
 le tracce per aeroporto**: il database scelto deve contenere il solo
 contesto aeroportuale indicato. Gli estremi sono associati tramite
 `anagrafica.piste.nome_pista`, senza dipendere dall'ordine delle righe:
 Malpensa EST = 35R/17L, OVEST = 35L/17R; Linate usa solo 36R/18L.
 
-05 aggiorna pista e SID; 06 aggiorna solo pista, lasciando la SID invariata.
+05 aggiorna pista e SID; normalmente 06 aggiorna solo pista, lasciando la SID invariata.
 Un'assegnazione fallita salva il codice diagnostico e imposta
 `validation_fl='P'`, `validation_bt=0`. Il recupero previsto per gli
 atterraggi di Malpensa puo marcare l'ultima battuta `X`.
@@ -193,8 +194,67 @@ estremi richiesti interrompono il comando prima del salvataggio.
 Nessuna traccia da elaborare e un esito positivo senza scritture.
 AutoCommit non consente rollback dopo errori o annullamenti durante
 il salvataggio. Non avviare contemporaneamente altri passaggi sullo stesso
-database: l'esclusiva vale solo per lo stesso codice comando.
+database: 03-06 condividono un blocco per database, ma 02 e processi esterni
+non partecipano a questo blocco.
 Gli script legacy restano invariati.
+
+## Intervallo temporale e sovrascrittura: 03-06
+
+I quattro form espongono **Dal giorno**, **Al giorno** (estremi inclusi)
+e **Sovrascrivi e azzera i risultati dipendenti**, disattivato per default.
+Le date sono facoltative ma vanno indicate entrambe: senza date si
+considerano tutti i giorni del database. Sono disponibili anche da CLI/API
+come `date_from`, `date_to`, `overwrite`:
+
+```bash
+perl bin/procedure run valida_tracce --database radar_test --airport LIME --date-from 2026-11-01 --date-to 2026-11-02
+perl bin/procedure run valida_battute --database radar_test --date-from 2026-11-01 --date-to 2026-11-02 --overwrite
+```
+
+Il giorno e quello di `flay.data_ora_italy`, non `data` UTC ne
+`data_ora_arr` calcolata da 04. Una traccia selezionata e elaborata con
+tutte le sue battute, anche se attraversa mezzanotte. Tracce senza data
+locale sono escluse con conteggio nei log; le tracce unite (`M`) non
+vengono toccate. Selezioni, aggiornamento date, reset e riepiloghi
+rispettano i soli giorni selezionati e non saltati.
+
+Lo storico giornaliero e persistente in PostgreSQL (`validation_days`),
+separato per server/porta MySQL, database e comando. Un giorno viene
+saltato solo se una precedente esecuzione di quel comando risulta
+**completata con successo**. Esecuzioni fallite, annullate o ancora in
+corso non determinano skip. I risultati precedenti all'introduzione dello
+storico non sono considerati automaticamente completamenti giornalieri;
+restano comunque i normali filtri sui dati gia validati.
+Per rielaborare nuovi dati importati in un giorno gia completato o cambiare
+aeroporto/revisione, selezionare Sovrascrivi.
+
+La sovrascrittura ricalcola il passaggio richiesto e azzera i dati dipendenti:
+
+| Comando | Reset nei soli giorni elaborati |
+|---|---|
+| 03 | Classificazioni battute, validazione battute, date calcolate, pista e SID; ricalcola la validazione tracce |
+| 04 | Conserva l'esito di 03, ricalcola battute e date; azzera pista e SID |
+| 05 | Ripristina le battute `X` a `Y`, conserva l'esito di 04; ricalcola pista/SID degli arrivi |
+| 06 | Conserva l'esito di 04; azzera pista/SID dei decolli e ricalcola la pista |
+
+Per 04 sono ricalcolabili gli esiti `Y/L/D/P`, non gli scarti `N` di 03.
+Per 05/06 sono ricalcolabili le tracce validate da 04 e quelle invalidate
+dall'assegnazione pista (`P`, validation_bt=0, pista diagnostica `N*`).
+Per queste ultime, l'esito precedente di 04 viene ricostruito dal numero
+di battute `Y` (anche `X` per 05): 4-7 -> `L`, almeno 8 -> `Y`.
+Meno di quattro battute bloccano il comando prima di modificare i dati.
+Il reset riguarda questi stati, date, pista e SID: non annulla modifiche
+alle coordinate/quote eventualmente eseguite da altri script legacy.
+
+Ricalcolare 03 invalida anche lo storico di 04/05/06; ricalcolare 04 quello
+di 05/06. 05 e 06 sono indipendenti. L'invalidazione precede gli UPDATE:
+un errore non lascia uno storico che faccia saltare risultati ormai
+parziali. Le scritture MySQL restano in AutoCommit: dopo un'interruzione
+verificare i log e rilanciare con Sovrascrivi. Le registrazioni giornaliere
+sono valide solo se termina con successo l'intera esecuzione richiesta.
+
+La migrazione PostgreSQL viene applicata automaticamente all'avvio
+aggiornato di app/worker; non vengono aggiunte tabelle ai database radar.
 
 ## Avanzamento dei comandi 03-06
 
@@ -218,7 +278,8 @@ Il profilo locale `test` usa l'immagine di sviluppo e il servizio PostGIS già c
 La suite non fa parte delle verifiche GitHub Actions.
 
 I test MyISAM reali sono opt-in: `TEST_MYSQL=1` crea e rimuove esclusivamente un
-database dal nome univoco `sm_test_mysql_<pid>_<numero>` sul server configurato.
+database dal nome univoco `sm_test_mysql_<pid>_<numero>` oppure
+`sm_test_validation_<pid>_<numero>` sul server configurato.
 Non leggono i file radar reali e non scrivono nel database operativo.
 L'account di test deve poter creare/eliminare questi database e usare tutti i
 privilegi necessari nelle sole tabelle di test; `local_infile` deve essere attivo.
@@ -226,6 +287,7 @@ privilegi necessari nelle sole tabelle di test; `local_infile` deve essere attiv
 ```powershell
 $env:TEST_MYSQL = '1'
 docker compose --profile test run --rm test prove -l -Ilib t/integration/carica_myisam.t
+docker compose --profile test run --rm test prove -l t/integration/validation_window.t
 Remove-Item Env:\TEST_MYSQL
 ```
 

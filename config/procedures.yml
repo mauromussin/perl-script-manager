@@ -22,6 +22,8 @@ procedures:
       e almeno una battuta entro 10 km dal centro dell'aeroporto e 1000 m di quota.
       Tracce valide ricevono validation_fl='Y'; non valide ricevono validation_fl='N'
       e tutte le loro battute sono marcate con validation='A'.
+      Date facoltative: senza intervallo considera tutto il database.
+      Salta i giorni gia completati, salvo Sovrascrivi (azzera anche i risultati dipendenti).
     enabled: true
     handler_class: ScriptManager::Command::ValidaTracce
     execution_mode: async
@@ -36,6 +38,8 @@ procedures:
       validation_bt NULL): taxi, spezzature, velocita e direzione.
       Aggiorna gli stati delle tracce e le date di decollo/atterraggio mancanti.
       Scritture in AutoCommit: annullamenti ed errori non annullano gli aggiornamenti gia eseguiti.
+      Date facoltative: senza intervallo considera tutto il database.
+      Salta i giorni gia completati, salvo Sovrascrivi (azzera anche pista e SID).
     enabled: true
     handler_class: ScriptManager::Command::ValidaBattute
     execution_mode: async
@@ -58,6 +62,8 @@ procedures:
       Assegna pista e SID agli atterraggi validati da 04 con pista non ancora assegnata.
       Seleziona aeroporto e revisione legacy. Le assegnazioni fallite invalidano la traccia.
       AutoCommit: errori e annullamenti non annullano le scritture gia eseguite.
+      Date facoltative: senza intervallo considera tutto il database.
+      Salta i giorni gia completati, salvo Sovrascrivi.
     enabled: true
     handler_class: ScriptManager::Command::TrovaPistaAtterraggi
     execution_mode: async
@@ -100,6 +106,8 @@ procedures:
       Assegna la pista ai decolli validati da 04 con pista non ancora assegnata (legacy 1.1).
       Non assegna la SID. Le assegnazioni fallite invalidano la traccia.
       AutoCommit: errori e annullamenti non annullano le scritture gia eseguite.
+      Date facoltative: senza intervallo considera tutto il database.
+      Salta i giorni gia completati, salvo Sovrascrivi (azzera anche la SID dipendente).
     enabled: true
     handler_class: ScriptManager::Command::TrovaPistaDecolli
     execution_mode: async

@@ -79,6 +79,7 @@ sub execute ($self, $id, $params = undef) {
         : $final{status} eq 'cancelled' ? 'warning' : 'error';
     $ctx->log($level, $final{summary} // $final{error_message}, event_type => 'state');
     $self->repo->mark_finished($id, %final);
+    $ctx->validation_guard(undef);
     return $final{status};
 }
 

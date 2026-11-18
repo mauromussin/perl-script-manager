@@ -1,6 +1,8 @@
 use Mojo::Base -strict, -signatures;
 use Test::More;
 use FindBin;
+use lib "$FindBin::Bin/../lib";
+use TestValidationWindow;
 use Mojo::File 'path';
 use ScriptManager::Command::ValidaBattute;
 use ScriptManager::Service::ProcedureRegistry;
@@ -240,7 +242,7 @@ subtest 'esecuzione e progressione di tutte le fasi' => sub {
             $db->tracks([]) if $mode eq 'empty';
             $db->hits->{1} = line_hits(501) if $mode eq 'batch';
             $db->tracks([[1, 'D'], [2, 'N']]) if $mode eq 'operation';
-            my $command = ScriptManager::Command::ValidaBattute->new(connect_db => sub (@args) {
+            my $command = ScriptManager::Command::ValidaBattute->new(window_class => 'TestValidationWindow', connect_db => sub (@args) {
                 like $args[0], qr/database=radar_test;host=localhost;port=3306/, 'connessione richiesta';
                 ok $args[3]{AutoCommit}, 'comportamento legacy AutoCommit esplicito';
                 return $db;

@@ -1,6 +1,8 @@
 use Mojo::Base -strict, -signatures;
 use Test::More;
 use FindBin;
+use lib "$FindBin::Bin/../lib";
+use TestValidationWindow;
 use Mojo::File 'path';
 use ScriptManager::Command::ValidaTracce;
 use ScriptManager::Service::ProcedureRegistry;
@@ -107,7 +109,7 @@ subtest 'nessuna traccia da validare' => sub {
     
     my $db = TestDatabase->new;
     my $ctx = TestContext->new;
-    my $cmd = ScriptManager::Command::ValidaTracce->new(connect_db => sub (@args) { $db });
+    my $cmd = ScriptManager::Command::ValidaTracce->new(window_class => 'TestValidationWindow', connect_db => sub (@args) { $db });
     
     my $result = $cmd->run($ctx, {database => 'test_db', airport => 'LIME'});
     ok $result->{success}, 'esecuzione completata';
@@ -166,7 +168,7 @@ subtest 'traccia valida con battute in intorno aeroporto' => sub {
     *TestDatabase::selectall_arrayref = \&TestDatabase::selectall_arrayref_override;
     
     my $ctx = TestContext->new;
-    my $cmd = ScriptManager::Command::ValidaTracce->new(connect_db => sub (@args) { $db });
+    my $cmd = ScriptManager::Command::ValidaTracce->new(window_class => 'TestValidationWindow', connect_db => sub (@args) { $db });
     
     my $result = $cmd->run($ctx, {database => 'test_db', airport => 'LIME'});
     ok $result->{success}, 'esecuzione completata';
@@ -206,7 +208,7 @@ subtest 'traccia non valida per pochi hit' => sub {
     };
     
     my $ctx = TestContext->new;
-    my $cmd = ScriptManager::Command::ValidaTracce->new(connect_db => sub (@args) { $db });
+    my $cmd = ScriptManager::Command::ValidaTracce->new(window_class => 'TestValidationWindow', connect_db => sub (@args) { $db });
     
     my $result = $cmd->run($ctx, {database => 'test_db', airport => 'LIME'});
     ok $result->{success};
@@ -245,7 +247,7 @@ subtest 'traccia non valida per nessun hit in intorno aeroporto' => sub {
     };
     
     my $ctx = TestContext->new;
-    my $cmd = ScriptManager::Command::ValidaTracce->new(connect_db => sub (@args) { $db });
+    my $cmd = ScriptManager::Command::ValidaTracce->new(window_class => 'TestValidationWindow', connect_db => sub (@args) { $db });
     
     my $result = $cmd->run($ctx, {database => 'test_db', airport => 'LIME'});
     is $result->{data}{valid_count}, 0, 'nessuna traccia valida';
@@ -274,7 +276,7 @@ subtest 'errori database classificati correttamente' => sub {
     # Test mancanza variabili ambiente
     local $ENV{MYSQL_HOST} = '';
     my $ctx = TestContext->new;
-    my $cmd = ScriptManager::Command::ValidaTracce->new(connect_db => sub (@args) { TestDatabase->new });
+    my $cmd = ScriptManager::Command::ValidaTracce->new(window_class => 'TestValidationWindow', connect_db => sub (@args) { TestDatabase->new });
     
     eval { $cmd->run($ctx, {database => 'test_db', airport => 'LIME'}) };
     ok(ScriptManager::Exception->caught($@, 'mysql_config'), 'mancanza MYSQL_HOST rilevata');
@@ -308,7 +310,7 @@ subtest 'avanzamento tracciato' => sub {
     };
     
     my $ctx = TestContext->new;
-    my $cmd = ScriptManager::Command::ValidaTracce->new(connect_db => sub (@args) { $db });
+    my $cmd = ScriptManager::Command::ValidaTracce->new(window_class => 'TestValidationWindow', connect_db => sub (@args) { $db });
     
     my $result = $cmd->run($ctx, {database => 'test_db', airport => 'LIME'});
     ok $result->{success};
@@ -371,7 +373,7 @@ subtest 'avanzamento include scritture e riepilogo, anche in caso di errore' => 
                 $disconnected = 1;
                 return 1;
             };
-            my $cmd = ScriptManager::Command::ValidaTracce->new(connect_db => sub { $db });
+            my $cmd = ScriptManager::Command::ValidaTracce->new(window_class => 'TestValidationWindow', connect_db => sub { $db });
             my $result = eval { $cmd->run($ctx, {database => 'test_db', airport => 'LIME'}) };
             if ($failure ne 'none') {
                 like "$@", qr/\Q$failure\E failed/, 'errore propagato';

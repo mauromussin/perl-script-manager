@@ -8,6 +8,7 @@ use ScriptManager::Exception;
 
 # Execution context passed to every command: logging, progress, cancellation and output files.
 has [qw(execution_id repo output_root logger retention_days)];
+has 'validation_guard';
 has debug_operations => 0;
 has types => sub { Mojolicious::Types->new };
 

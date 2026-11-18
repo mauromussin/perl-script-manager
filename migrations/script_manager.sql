@@ -76,3 +76,16 @@ update execution_events set level = 'error' where level = 'critical';
 alter table execution_events drop constraint execution_events_level_check;
 alter table execution_events add constraint execution_events_level_check
   check (level in ('info', 'warning', 'error', 'debug'));
+
+-- 3 up
+create table validation_days (
+  target         text not null,
+  procedure_code text not null,
+  day            date not null,
+  execution_id   uuid not null references executions (id) on delete cascade,
+  completed_at   timestamptz not null default now(),
+  primary key (target, procedure_code, day)
+);
+
+-- 3 down
+drop table if exists validation_days;

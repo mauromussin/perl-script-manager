@@ -5,9 +5,15 @@ use DBI;
 use Scalar::Util 'looks_like_number';
 use POSIX 'isfinite';
 use ScriptManager::Exception;
+use ScriptManager::Service::ValidationWindow;
 
 has [qw(logger process_runner)];
 has connect_db => sub { sub (@args) { DBI->connect(@args) } };
+has window_class => 'ScriptManager::Service::ValidationWindow';
+
+sub configure_schema ($class, $schema, $directory) {
+    ScriptManager::Service::ValidationWindow->configure_schema($schema);
+}
 
 sub _distance ($a, $b, $three_d = 0) {
     return sqrt(($a->[2] - $b->[2])**2 + ($a->[3] - $b->[3])**2
@@ -109,6 +115,7 @@ sub analyze_track ($class, $hits, $operation, $ctx = undef) {
 }
 
 sub run ($self, $ctx, $params) {
+    ScriptManager::Service::ValidationWindow->validate_params($params);
     ScriptManager::Exception->throw('invalid_database', 'Nome database MySQL non valido')
         unless ($params->{database} // '') =~ /\A[A-Za-z0-9_]{1,64}\z/;
     for my $key (qw(MYSQL_HOST MYSQL_USER MYSQL_PASSWORD)) {
@@ -135,10 +142,14 @@ sub run ($self, $ctx, $params) {
             'Connessione MySQL fallita: verificare MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD e database');
     }
     my $result;
+    my $window;
     my $ok = eval {
+        $window = $self->window_class->new(db => $db, ctx => $ctx, params => $params, stage => 4)->prepare;
+        my ($filter, @scope_bind) = $window->filter;
         my $tracks = $db->selectall_arrayref(
-            'SELECT row_id, flay_operation FROM flay WHERE validation_bt IS NULL AND validation_fl = ? ORDER BY row_id',
-            undef, 'Y');
+            'SELECT row_id, flay_operation FROM flay WHERE '
+            . ($window->overwrite ? q{validation_fl IN ('Y','L','D','P')} : 'validation_bt IS NULL AND validation_fl = ?')
+            . $filter . ' ORDER BY row_id', undef, ($window->overwrite ? () : ('Y')), @scope_bind);
         ScriptManager::Exception->throw('invalid_operation',
             'Sono presenti tracce da validare con operazione diversa da A/D; nessuna modifica eseguita')
             if grep { !defined $_->[1] || $_->[1] !~ /\A[AD]\z/ } @$tracks;
@@ -150,12 +161,13 @@ sub run ($self, $ctx, $params) {
             my $hits = $db->selectall_arrayref(
                 'SELECT row_id, UNIX_TIMESTAMP(time_italy), X_m, Y_m, H_m, validation FROM battute WHERE flay_id = ? ORDER BY row_id',
                 undef, $track->[0]);
-            my $plan = __PACKAGE__->analyze_track($hits, $track->[1], $ctx);
+            my $input = $window->overwrite ? [map { [@$_[0 .. 4], undef] } @$hits] : $hits;
+            my $plan = __PACKAGE__->analyze_track($input, $track->[1], $ctx);
             my %updates;
             for my $hit (@$hits) {
                 my $flag = $plan->{flags}{$hit->[0]};
                 push @{$updates{$flag}}, $hit->[0]
-                    if defined $flag && (!defined $hit->[5] || $flag ne $hit->[5]);
+                    if defined $flag && ($window->overwrite || !defined $hit->[5] || $flag ne $hit->[5]);
             }
             delete $plan->{flags};
             $plan->{id} = $track->[0];
@@ -178,6 +190,7 @@ sub run ($self, $ctx, $params) {
             $last_percent = $percent;
         };
         $advance->('Salvataggio: classificazioni delle battute e delle tracce');
+        $window->start_saving;
         for my $plan (@plans) {
             for my $flag (sort keys %{$plan->{updates}}) {
                 my @ids = @{$plan->{updates}{$flag}};
@@ -201,16 +214,20 @@ sub run ($self, $ctx, $params) {
             my $aggregate = $operation eq 'D' ? 'MIN' : 'MAX';
             $ctx->progress(50 + int(49 * $saved / $units),
                 "Salvataggio: data_ora_arr per " . ($operation eq 'D' ? 'decolli' : 'atterraggi'));
+            my ($date_filter, @date_bind) = $window->filter('f');
             $db->do("UPDATE flay f JOIN (SELECT flay_id, $aggregate(time_italy) AS data_ora "
                 . 'FROM battute WHERE validation IN (?, ?) GROUP BY flay_id) t ON f.row_id = t.flay_id '
                 . 'SET f.data_ora_arr = t.data_ora WHERE f.flay_operation = ? AND f.validation_bt = ? '
-                . 'AND f.data_ora_arr IS NULL', undef, 'Y', 'L', $operation, 1);
+                . 'AND f.data_ora_arr IS NULL' . $date_filter, undef, 'Y', 'L', $operation, 1, @date_bind);
             $saved++;
             $advance->("Salvataggio: $saved di $units operazioni");
         }
         $ctx->check_cancel;
         $ctx->progress(99, 'Riepilogo finale della validazione battute');
-        my $report = $db->selectall_arrayref('SELECT validation, COUNT(*) FROM battute GROUP BY validation');
+        my ($report_filter, @report_bind) = $window->filter('f');
+        my $report = $db->selectall_arrayref(
+            'SELECT validation, COUNT(*) FROM battute b JOIN flay f ON f.row_id = b.flay_id WHERE 1=1'
+            . $report_filter . ' GROUP BY validation', undef, @report_bind);
         for my $row (@$report) {
             $ctx->log(info => 'Stato complessivo battute ' . ($row->[0] // 'NULL') . ": $row->[1]");
         }
@@ -229,6 +246,7 @@ sub run ($self, $ctx, $params) {
         die $error;
     }
     $db->disconnect;
+    $window->finish($result);
     $ctx->progress(100, 'Validazione battute conclusa');
     return $result;
 }
