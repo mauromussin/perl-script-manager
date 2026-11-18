@@ -10,9 +10,13 @@ use ScriptManager::Service::ProcedureRegistry;
     use Mojo::Base 'ScriptManager::Service::Context', -signatures;
     has events => sub { [] };
     has percentages => sub { [] };
+    has steps => sub { [] };
     sub check_cancel ($self) { }
     sub log ($self, @event) { push @{$self->events}, \@event }
-    sub progress ($self, $percentage, @rest) { push @{$self->percentages}, $percentage }
+    sub progress ($self, $percentage, @rest) {
+        push @{$self->percentages}, $percentage;
+        push @{$self->steps}, [$percentage, @rest];
+    }
 }
 
 {
@@ -59,6 +63,7 @@ use ScriptManager::Service::ProcedureRegistry;
 }
 
 my $root = path($FindBin::Bin, '..', '..')->realpath;
+local $ENV{MRT_CONFIG_FILE} = $root->child('config', 'MRT.example.json')->to_string;
 
 subtest 'comando registrato nel catalogo' => sub {
     my $registry = ScriptManager::Service::ProcedureRegistry->new(file => $root->child('config', 'procedures.yml'))->load;
@@ -309,6 +314,85 @@ subtest 'avanzamento tracciato' => sub {
     ok $result->{success};
     ok scalar @{$ctx->percentages}, 'avanzamento registrato';
     is $ctx->percentages->[-1], 100, 'ultimo avanzamento al 100%';
+};
+
+subtest 'avanzamento include scritture e riepilogo, anche in caso di errore' => sub {
+    local $ENV{MYSQL_HOST} = 'localhost';
+    local $ENV{MYSQL_PORT} = 3306;
+    local $ENV{MYSQL_USER} = 'test';
+    local $ENV{MYSQL_PASSWORD} = 'test';
+    no warnings qw(redefine once);
+
+    for my $case (
+        [[], 'none'], [[1, 3], 'none'], [[2, 4], 'none'], [[1, 2], 'none'],
+        [[1, 2], 'flay'], [[1, 2], 'battute'],
+        [[1, 2], 'report'], [[1, 2], 'disconnect']
+    ) {
+        my ($ids, $failure) = @$case;
+        subtest join(',', @$ids) . " / $failure" => sub {
+            my $ctx = TestContext->new;
+            my $db = TestDatabase->new(tracks => {map { $_ => 1 } @$ids});
+            my @writes;
+            my $disconnected = 0;
+            local *TestDatabase::selectall_arrayref = sub {
+                my ($self, $sql, undef, $id) = @_;
+                if ($sql =~ /information_schema/) {
+                    return [['flay'], ['battute']];
+                }
+                if ($sql =~ /FROM battute/) {
+                    cmp_ok $ctx->percentages->[-1], '<', 50, 'analisi prima della fase di salvataggio';
+                    return [map { [1521961, 5034000, 100] } 1 .. ($id % 2 ? 4 : 3)];
+                }
+                if ($sql =~ /GROUP BY/) {
+                    is $ctx->percentages->[-1], 99, 'riepilogo visibile al 99%';
+                    like $ctx->steps->[-1][1], qr/Riepilogo/, 'fase finale esplicita';
+                    is scalar(@writes), scalar(@$ids) + scalar(grep { $_ % 2 == 0 } @$ids),
+                        'tutte le scritture concluse prima del riepilogo';
+                    die "report failed\n" if $failure eq 'report';
+                    return [];
+                }
+                die "Unexpected query $sql";
+            };
+            local *TestDatabase::do = sub {
+                my ($self, $sql) = @_;
+                cmp_ok $ctx->percentages->[-1], '>=', 50, 'scritture dopo analisi';
+                cmp_ok $ctx->percentages->[-1], '<', 99, 'scritture non ancora completate';
+                like $ctx->steps->[-1][1], qr/Salvataggio database: \d+ di /,
+                    'contatore salvataggio visibile';
+                die "$failure failed\n"
+                    if ($failure eq 'flay' && $sql =~ /UPDATE flay/)
+                    || ($failure eq 'battute' && $sql =~ /UPDATE battute/);
+                push @writes, $sql;
+                return 1;
+            };
+            local *TestDatabase::disconnect = sub {
+                ok !grep({ $_ == 100 } @{$ctx->percentages}), 'nessun 100% prima della chiusura';
+                die "disconnect failed\n" if $failure eq 'disconnect';
+                $disconnected = 1;
+                return 1;
+            };
+            my $cmd = ScriptManager::Command::ValidaTracce->new(connect_db => sub { $db });
+            my $result = eval { $cmd->run($ctx, {database => 'test_db', airport => 'LIME'}) };
+            if ($failure ne 'none') {
+                like "$@", qr/\Q$failure\E failed/, 'errore propagato';
+                ok !grep({ $_ == 100 } @{$ctx->percentages}), 'errore non mostrato come completamento';
+            }
+            else {
+                ok $result->{success}, 'comando completato';
+                ok $disconnected, 'connessione chiusa';
+                is $ctx->percentages->[-1], 100, '100% solo dopo tutte le fasi';
+                if (@$ids) {
+                    my @saving = grep { $_->[1] =~ /Salvataggio/ } @{$ctx->steps};
+                    is $saving[0][0], 50, 'fine analisi al 50%';
+                    is $saving[-1][0], 99, 'fine salvataggio al 99%';
+                    like $saving[-1][1], qr/@{[scalar @$ids]} di @{[scalar @$ids]} tracce/,
+                        'contatore include valide e non valide';
+                }
+            }
+            my @p = @{$ctx->percentages};
+            ok !grep({ $p[$_] < $p[$_ - 1] } 1 .. $#p), 'avanzamento monotono';
+        };
+    }
 };
 
 done_testing;

@@ -29,6 +29,89 @@ procedures:
     exclusive: true
     retention_days: 7
     parameter_schema_file: 03-valida-tracce-schema.yml
+  - code: valida_battute
+    name: 04-valida_battute
+    description: >-
+      Valida le battute delle tracce gia validate da 03 (validation_fl Y e
+      validation_bt NULL): taxi, spezzature, velocita e direzione.
+      Aggiorna gli stati delle tracce e le date di decollo/atterraggio mancanti.
+      Scritture in AutoCommit: annullamenti ed errori non annullano gli aggiornamenti gia eseguiti.
+    enabled: true
+    handler_class: ScriptManager::Command::ValidaBattute
+    execution_mode: async
+    timeout_seconds: 3600
+    exclusive: true
+    retention_days: 7
+    parameter_schema:
+      type: object
+      required: [database]
+      properties:
+        database:
+          type: string
+          title: Database MySQL di destinazione
+          pattern: '^[A-Za-z0-9_]{1,64}$'
+          maxLength: 64
+          x-order: 1
+  - code: trova_pista_atterraggi
+    name: 05-trova_pista_atterraggi
+    description: >-
+      Assegna pista e SID agli atterraggi validati da 04 con pista non ancora assegnata.
+      Seleziona aeroporto e revisione legacy. Le assegnazioni fallite invalidano la traccia.
+      AutoCommit: errori e annullamenti non annullano le scritture gia eseguite.
+    enabled: true
+    handler_class: ScriptManager::Command::TrovaPistaAtterraggi
+    execution_mode: async
+    timeout_seconds: 3600
+    exclusive: true
+    retention_days: 7
+    parameter_schema:
+      type: object
+      required: [database, airport]
+      properties:
+        database: &runway_database
+          type: string
+          title: Database MySQL di destinazione
+          pattern: '^[A-Za-z0-9_]{1,64}$'
+          maxLength: 64
+          x-order: 1
+        airport: &runway_airport
+          type: string
+          title: Aeroporto
+          enum: [LIMC, LIML, LIME, LIPO]
+          x-enum-labels:
+            LIMC: Milano Malpensa
+            LIML: Milano Linate (pista principale)
+            LIME: Bergamo Orio al Serio
+            LIPO: Brescia Montichiari
+          x-order: 2
+        revision:
+          type: string
+          title: Revisione legacy atterraggi
+          enum: ['1.0', '1.1', '1.2']
+          default: '1.2'
+          x-enum-labels:
+            '1.0': '1.0 - senza Montichiari, Orio offset -376 m'
+            '1.1': '1.1 - con Montichiari, Orio offset -376 m'
+            '1.2': '1.2 - con Montichiari, Orio senza offset'
+          x-order: 3
+  - code: trova_pista_decolli
+    name: 06-trova_pista_decolli
+    description: >-
+      Assegna la pista ai decolli validati da 04 con pista non ancora assegnata (legacy 1.1).
+      Non assegna la SID. Le assegnazioni fallite invalidano la traccia.
+      AutoCommit: errori e annullamenti non annullano le scritture gia eseguite.
+    enabled: true
+    handler_class: ScriptManager::Command::TrovaPistaDecolli
+    execution_mode: async
+    timeout_seconds: 3600
+    exclusive: true
+    retention_days: 7
+    parameter_schema:
+      type: object
+      required: [database, airport]
+      properties:
+        database: *runway_database
+        airport: *runway_airport
   - code: example_echo
     name: Esempio - eco con file di output
     description: >-

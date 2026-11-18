@@ -124,6 +124,90 @@ PostGIS deve essere gia presente localmente. L'app rimane su http://localhost:30
 Il workflow verifica checksum, reimportazione e identita dell'immagine esportata;
 non avvia servizi applicativi o database.
 
+## Validazione delle battute: 04-valida_battute
+
+Il comando `valida_battute` e disponibile nel catalogo web e nella CLI:
+
+```bash
+perl bin/procedure run valida_battute --database radar_test
+```
+
+Richiede solo il database: usa le stesse variabili `MYSQL_HOST`, `MYSQL_PORT`,
+`MYSQL_USER`, `MYSQL_PASSWORD` del caricamento. L'aeroporto richiesto dal legacy
+non e utilizzato e quindi non viene riproposto.
+
+Eseguire dopo `03-valida_tracce`: seleziona solo tracce con `validation_fl='Y'`
+e `validation_bt IS NULL`. Classifica battute taxi (`T`), spezzate (`S`),
+non valide (`N`), valide (`Y`) o appartenenti a tracce insufficienti (`D`).
+Aggiorna anche gli stati delle tracce (`D` sotto 4 valide, `L` da 4 a 7,
+`Y` da 8) e le date mancanti `data_ora_arr`: prima battuta valida per i
+decolli, ultima per gli atterraggi. Quest'ultimo passaggio include le tracce
+gia validate, anche se non ci sono nuove tracce da analizzare.
+
+Le correzioni dei difetti legacy approvate sono descritte
+nell'[inventario](docs/INVENTARIO_SCRIPT.md#04-valida_battute_10pl).
+Operazioni diverse da A/D e dati numerici mancanti/non validi (incluse quote
+negative, non gestite dal legacy) producono un errore prima del salvataggio.
+Gli script originali restano invariati.
+
+Come nel legacy, le scritture sono in AutoCommit: cancellazione o errore non
+annullano gli aggiornamenti gia eseguiti. Verificare i log e i dati prima di
+rieseguire un'elaborazione interrotta. Non eseguire contemporaneamente altri
+passaggi della pipeline sullo stesso database; l'esclusiva del catalogo
+impedisce solo esecuzioni concorrenti di questo stesso comando.
+
+## Assegnazione piste: 05 atterraggi e 06 decolli
+
+Dopo `04-valida_battute`, sono disponibili nel catalogo web e nella CLI:
+
+```bash
+perl bin/procedure run trova_pista_atterraggi --database radar_test --airport LIMC --revision 1.2
+perl bin/procedure run trova_pista_decolli --database radar_test --airport LIMC
+```
+
+Entrambi richiedono database e aeroporto (`LIMC`, `LIML`, `LIME`, `LIPO`),
+con le stesse variabili `MYSQL_*` del caricamento. Gli atterraggi consentono
+le revisioni legacy `1.0`, `1.1`, `1.2` (predefinita): la 1.0 non supporta
+LIPO; la 1.2 rimuove l'offset di -376 m di LIME presente nelle precedenti.
+I decolli riproducono l'unica revisione trovata, la 1.1, mantenendo i propri
+offset distinti da quelli degli atterraggi.
+
+Elaborano solo tracce della rispettiva operazione A/D con `validation_bt=1`
+e `pista IS NULL`, usando le battute `Y`. Come nel legacy, **non filtrano
+le tracce per aeroporto**: il database scelto deve contenere il solo
+contesto aeroportuale indicato. Gli estremi sono associati tramite
+`anagrafica.piste.nome_pista`, senza dipendere dall'ordine delle righe:
+Malpensa EST = 35R/17L, OVEST = 35L/17R; Linate usa solo 36R/18L.
+
+05 aggiorna pista e SID; 06 aggiorna solo pista, lasciando la SID invariata.
+Un'assegnazione fallita salva il codice diagnostico e imposta
+`validation_fl='P'`, `validation_bt=0`. Il recupero previsto per gli
+atterraggi di Malpensa puo marcare l'ultima battuta `X`.
+Le coppie di battute mancanti producono un esito non assegnato, senza
+riutilizzare coordinate o piste della traccia precedente.
+Restano le particolarita deterministiche di campionamento del legacy,
+descritte nell'[inventario](docs/INVENTARIO_SCRIPT.md#gruppo-05-trova_pista_atterraggi).
+
+L'analisi precede tutte le scritture; errori nei dati numerici o negli
+estremi richiesti interrompono il comando prima del salvataggio.
+Nessuna traccia da elaborare e un esito positivo senza scritture.
+AutoCommit non consente rollback dopo errori o annullamenti durante
+il salvataggio. Non avviare contemporaneamente altri passaggi sullo stesso
+database: l'esclusiva vale solo per lo stesso codice comando.
+Gli script legacy restano invariati.
+
+## Avanzamento dei comandi 03-06
+
+La barra include tutte le fasi: 0-50% analisi delle tracce, 50-99% salvataggio
+nel database, 99% riepilogo finale e 100% al termine del comando.
+Il salvataggio di 04 comprende gli stati di battute/tracce e le date
+di decollo/atterraggio, mostrate come passaggi distinti.
+Per 05/06 comprende piste, stati delle tracce ed eventuali battute `X`;
+il 100% viene emesso solo dopo la chiusura della connessione.
+Le scritture possono quindi richiedere tempo dopo l'analisi. Le percentuali indicano il lavoro
+completato nelle fasi, non il tempo residuo stimato. Lo stato resta `running`
+finche il comando non termina.
+
 ## Test locali
 
 ```bash

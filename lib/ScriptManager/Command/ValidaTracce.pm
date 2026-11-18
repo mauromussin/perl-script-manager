@@ -148,6 +148,8 @@ sub run ($self, $ctx, $params) {
     
     if (!@$unvalidated_tracks) {
         $ctx->log(info => 'Nessuna traccia da validare', operation => 'no_tracks');
+        $db->disconnect;
+        $ctx->progress(100, 'Nessuna traccia da validare');
         return {success => 1, message => 'Nessuna traccia da validare', data => {
             valid_count => 0, invalid_count => 0, total_count => 0
         }};
@@ -164,8 +166,8 @@ sub run ($self, $ctx, $params) {
         $ctx->check_cancel;
         
         $processed++;
-        my $percent = int(100 * $processed / $total);
-        $ctx->progress($percent, "Elaborazione traccia $processed di $total");
+        my $percent = int(50 * ($processed - 1) / $total);
+        $ctx->progress($percent, "Analisi traccia $processed di $total");
         
         # Recupera battute della traccia
         my $hits = $db->selectall_arrayref(
@@ -205,6 +207,17 @@ sub run ($self, $ctx, $params) {
         }
     }
     
+    my $saved = 0;
+    my $last_percent = 50;
+    $ctx->progress(50, "Salvataggio database: $saved di $total tracce");
+    my $saved_track = sub {
+        $saved++;
+        my $percent = 50 + int(49 * $saved / $total);
+        return if $percent == $last_percent;
+        $ctx->progress($percent, "Salvataggio database: $saved di $total tracce");
+        $last_percent = $percent;
+    };
+
     # Aggiorna database: tracce valide
     $ctx->log(info => 'Aggiornamento database per tracce valide', operation => 'update_valid_tracks',
         valid_count => scalar(@valid_tracks));
@@ -212,6 +225,7 @@ sub run ($self, $ctx, $params) {
     for my $track_id (@valid_tracks) {
         $ctx->check_cancel;
         $db->do('UPDATE flay SET validation_fl = ? WHERE row_id = ?', undef, 'Y', $track_id);
+        $saved_track->();
     }
     
     # Aggiorna database: tracce non valide e relative battute
@@ -222,9 +236,11 @@ sub run ($self, $ctx, $params) {
         $ctx->check_cancel;
         $db->do('UPDATE flay SET validation_fl = ? WHERE row_id = ?', undef, 'N', $track_id);
         $db->do('UPDATE battute SET validation = ? WHERE flay_id = ?', undef, 'A', $track_id);
+        $saved_track->();
     }
     
     # Report finale
+    $ctx->progress(99, 'Riepilogo finale della validazione');
     my $report_data = $db->selectall_arrayref(
         'SELECT validation_fl, COUNT(*) as count FROM flay WHERE validation_fl IS NOT NULL GROUP BY validation_fl'
     );
@@ -240,6 +256,7 @@ sub run ($self, $ctx, $params) {
     );
     
     $db->disconnect;
+    $ctx->progress(100, 'Validazione completata');
     
     return {
         success => 1,
