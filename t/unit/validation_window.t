@@ -21,14 +21,14 @@ subtest 'date reali, estremi inclusi e intervallo facoltativo' => sub {
     }
 };
 
-subtest 'controlli web API e CLI condivisi dai cinque comandi' => sub {
+subtest 'controlli web API e CLI condivisi dai comandi di validazione' => sub {
     my $root = path($FindBin::Bin, '..', '..')->realpath;
     local $ENV{MRT_CONFIG_FILE} = $root->child('config', 'MRT.example.json')->to_string;
     my $registry = ScriptManager::Service::ProcedureRegistry->new(file => $root->child('config', 'procedures.yml'))->load;
-    for my $code (qw(valida_tracce valida_battute trova_pista_atterraggi trova_pista_decolli assegna_sid)) {
+    for my $code (qw(valida_tracce valida_battute trova_pista_atterraggi trova_pista_decolli assegna_sid rettifica_quote correggi_quote)) {
         my $validator = $registry->validator($registry->get($code));
         my $input = {database => 'radar_test', airport => 'LIME'};
-        delete $input->{airport} if $code eq 'valida_battute';
+        delete $input->{airport} if $code eq 'valida_battute' || $code eq 'rettifica_quote';
         my ($params, $errors) = $validator->validate($input);
         is_deeply $errors, [], "$code senza date";
         ok !$params->{overwrite}, 'sovrascrittura disabilitata per default';
@@ -83,7 +83,7 @@ subtest 'controlli web API e CLI condivisi dai cinque comandi' => sub {
 subtest 'skip giornaliero, filtro e invalidazione delle sole dipendenze' => sub {
     local $ENV{MYSQL_HOST} = 'mysql.test';
     local $ENV{MYSQL_PORT} = 3306;
-    for my $stage (3 .. 7) {
+    for my $stage (3 .. 8, 10) {
         for my $overwrite (false, true) {
             my $ctx = WindowContext->new;
             my $db = WindowDatabase->new;
@@ -93,7 +93,7 @@ subtest 'skip giornaliero, filtro e invalidazione delle sole dipendenze' => sub 
             is_deeply $scope->days, $overwrite ? ['2026-11-01', '2026-11-02'] : ['2026-11-02'],
                 "fase $stage: giorni gia completati inclusi solo in sovrascrittura";
             my ($sql, @bind) = $scope->filter('f');
-            like $sql, $stage == 7 ? qr/DATE\(f.data_ora_arr\) IN \(/ : qr/DATE\(f.data_ora_italy\) IN \(/,
+            like $sql, $stage == 7 || $stage == 10 ? qr/DATE\(f.data_ora_arr\) IN \(/ : qr/DATE\(f.data_ora_italy\) IN \(/,
                 'campo data coerente con la fase';
             is $bind[0], $overwrite ? '2026-11-01' : '2026-11-02', 'date tramite placeholder';
             ok !grep({ $_->[0] =~ /^(UPDATE|DELETE)/ } @{$db->queries}), 'prepare non modifica dati';
@@ -103,10 +103,19 @@ subtest 'skip giornaliero, filtro e invalidazione delle sole dipendenze' => sub 
             is_deeply $invalidated->[1], $stage == 3
                 ? [qw(valida_tracce valida_battute trova_pista_atterraggi trova_pista_decolli)]
                 : $stage == 4 ? [qw(valida_battute trova_pista_atterraggi trova_pista_decolli)]
-                : [$stage == 5 ? 'trova_pista_atterraggi' : $stage == 6 ? 'trova_pista_decolli' : 'assegna_sid'],
+                : [$stage == 5 ? 'trova_pista_atterraggi' : $stage == 6 ? 'trova_pista_decolli'
+                    : $stage == 7 ? 'assegna_sid' : $stage == 8 ? 'rettifica_quote' : 'correggi_quote'],
                 '05 e 06 sono indipendenti, entrambi dipendono da 04';
             if ($stage == 3 || $stage == 4 || $stage == 6) {
-                is_deeply $ctx->repo->invalidated->[1][1], ['assegna_sid'], 'invalida anche SID con date dedicate';
+                is_deeply $ctx->repo->invalidated->[2][1], ['assegna_sid'], 'invalida anche SID con date dedicate';
+            }
+            if ($stage <= 6) {
+                is_deeply $ctx->repo->invalidated->[1][1], ['rettifica_quote'], 'invalida anche 08 sulle date locali';
+            }
+            unlike $sql, qr/flay_operation/, '08 include arrivi e decolli' if $stage == 8;
+            if ($stage <= 6 || $stage == 8) {
+                ok grep({ $_->[1][0] eq 'correggi_quote' } @{$ctx->repo->invalidated}),
+                    'upstream invalida anche 10 sulle date effettive';
             }
             is scalar @{$ctx->repo->recorded}, 0, 'non registra successo prima del completamento';
             my $result = $scope->finish({success => 1, data => {}, message => 'OK'});
@@ -116,6 +125,15 @@ subtest 'skip giornaliero, filtro e invalidazione delle sole dipendenze' => sub 
     }
     my $scope = ScriptManager::Service::ValidationWindow->new;
     is_deeply [$scope->filter], [' AND 1 = 0'], 'nessun giorno non diventa intero database';
+};
+
+subtest '10 non registra completi i giorni con tracce saltate' => sub {
+    local $ENV{MYSQL_HOST} = 'mysql.test';
+    my $ctx = WindowContext->new;
+    my $scope = ScriptManager::Service::ValidationWindow->new(db => WindowDatabase->new, ctx => $ctx, stage => 10,
+        params => {database => 'radar_test', overwrite => true})->prepare;
+    $scope->finish({message => 'OK', data => {incomplete_days => ['2026-11-02']}});
+    is_deeply $ctx->repo->recorded->[0][2], ['2026-11-01'];
 };
 
 done_testing;

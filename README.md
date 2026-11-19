@@ -153,7 +153,7 @@ Gli script originali restano invariati.
 
 Come nel legacy, le scritture sono in AutoCommit: cancellazione o errore non
 annullano gli aggiornamenti gia eseguiti. Verificare i log e i dati prima di
-rieseguire un'elaborazione interrotta. Il blocco condiviso dei comandi 03-07
+rieseguire un'elaborazione interrotta. Il blocco condiviso dei comandi 03-10
 impedisce modifiche concorrenti sullo stesso database; non protegge dai
 caricamenti 02 o da processi esterni, da non avviare contemporaneamente.
 
@@ -194,7 +194,7 @@ estremi richiesti interrompono il comando prima del salvataggio.
 Nessuna traccia da elaborare e un esito positivo senza scritture.
 AutoCommit non consente rollback dopo errori o annullamenti durante
 il salvataggio. Non avviare contemporaneamente altri passaggi sullo stesso
-database: 03-07 condividono un blocco per database, ma 02 e processi esterni
+database: 03-10 condividono un blocco per database, ma 02 e processi esterni
 non partecipano a questo blocco.
 Gli script legacy restano invariati.
 
@@ -225,10 +225,195 @@ gia presenti. Scritture e riepilogo, compresi gli esiti NA, non escono
 dai giorni selezionati non saltati. Analisi, salvataggio, riepilogo e
 conclusione seguono lo stesso schema degli altri comandi.
 
-## Intervallo temporale e sovrascrittura: 03-07
+## Rettifica quote nulle: 08
 
-I cinque form espongono **Dal giorno**, **Al giorno** (estremi inclusi)
+Il comando `rettifica_quote` migra l'unica variante
+`08-rettifica_quote_nulle_1.1.pl`, dopo l'assegnazione delle piste e,
+per i decolli, preferibilmente dopo 07:
+
+```bash
+perl bin/procedure run rettifica_quote --database radar_test --date-from 2026-11-01 --date-to 2026-11-02
+```
+
+Elabora **arrivi e decolli**, come la SELECT legacy, con `validation_bt=1`
+e pista non NULL. Non richiede aeroporto: il parametro legacy era inutilizzato.
+Le date si riferiscono a `data_ora_italy`. Legge le battute in ordine
+`time_italy, row_id`, escludendo `N`, `A`, `S` e validation NULL; include
+quindi anche `X`, `T` e `L`, non soltanto `Y`.
+
+Scrive `Z_m`, `hmod` e `flay.validation_bt`; **non modifica H_m**,
+coordinate, pista o SID. Copia H_m non zero in Z_m con hmod NULL e interpola
+gli zeri usando le distanze euclidee XY dalle quote originali non zero:
+due ancore interne per l'interpolazione, le prime/ultime due per
+l'estrapolazione agli estremi. Include anche l'ultima battuta come ancora.
+Le quote calcolate negative diventano zero. Con una sola ancora usa una
+quota costante; a distanza nulla usa la quota dell'ancora, segnalando entrambi
+i casi nei log. Queste correzioni e la copia delle quote originali sono
+state approvate esplicitamente, non riproducono i difetti del legacy.
+
+Con meno di tre battute ammesse o tutte le H_m zero, segnala la traccia
+come non rettificabile e non la porta a `validation_bt=2`. Gli altri
+completamenti avanzano da 1 a 2 solo dopo il salvataggio delle quote.
+Le battute gia `hmod=M` sono preservate senza Sovrascrivi.
+Il riepilogo distingue tracce rettificate, non rettificabili, quote
+interpolate e copiate. Una conclusione con avvisi registra comunque
+i giorni nello storico: per ritentare le tracce non rettificabili dopo
+aver corretto i dati usare Sovrascrivi.
+
+Sovrascrivi include anche le tracce con `validation_bt=2/3`, azzera Z_m/hmod
+delle sole battute ammesse e ricalcola da H_m. Elimina inoltre A_m delle
+tracce interessate e invalida lo storico 10: rieseguire la normalizzazione.
+Analisi completa prima delle scritture; errori nei numerici interrompono
+prima dei reset. Nessuna nuova tabella nel database radar: sono richiesti
+i campi legacy `battute.Z_m` e `battute.hmod`.
+
+## Dati meteo orari Open-Meteo: 09
+
+`carica_meteo` sostituisce l'importazione di file di centraline delle
+varianti legacy 1.3-1.6 con l'[Historical Weather API di Open-Meteo](https://open-meteo.com/en/docs/historical-weather-api).
+Richiede **database, aeroporto, data iniziale e data finale**:
+
+```bash
+perl bin/procedure run carica_meteo --database radar_test --airport LIMC --date-from 2025-09-01 --date-to 2025-10-31
+```
+
+Le date sono giorni italiani inclusivi e sempre obbligatorie, diversamente
+da 03-08. Supporta LIMC/LIML/LIME/LIPO, richiedendo dati alle coordinate ARP
+WGS84 pubblicate e alla quota `anagrafica.aeroporti.QUOTA_aerop`.
+Non invia i campi LAT/LONG del database: sono coordinate proiettate.
+I riferimenti ARP sono riportati nell'inventario e nel report; verificarli
+rispetto all'AIP applicabile prima di un impiego operativo.
+
+Sono **dati modellistici storici, non osservazioni di centralina/METAR**.
+Il modello `best_match` e la griglia sono scelti da Open-Meteo: la cella
+restituita puo differire dall'ARP richiesto. Il report conserva coordinate
+richieste e restituite, quota, URL pubblico e risposta originale.
+
+| Campo `meteo` | Variabile Open-Meteo / unita |
+|---|---|
+| `precipitazione_mm` | `precipitation`, mm nell'ora precedente |
+| `temperatura_C` | `temperature_2m`, gradi Celsius |
+| `direzione_vento1` | `wind_direction_10m`, gradi |
+| `velocita_vento` | `wind_speed_10m`, m/s |
+| `umidita_relativa` | `relative_humidity_2m`, percentuale |
+| `radiazione_globale` | `shortwave_radiation`, W/m2 medi nell'ora precedente, arrotondati all'intero del campo legacy |
+| `pressione_hpa` | `surface_pressure` alla quota ARP, hPa, non pressione ridotta al livello del mare |
+| `direzione_vento2`, `radiazione_netta` | NULL: nessun equivalente assunto |
+
+Scrive nella tabella legacy **`meteo`**, senza modificarne lo schema e senza
+toccare `meteo_cgp`, tracce o battute. Un giorno con almeno una riga esistente
+viene saltato, anche se incompleto o proveniente da una centralina; per
+questa fase non si usa lo storico `validation_days`. **Sovrascrivi cancella
+tutte le righe meteo dei soli giorni richiesti e le sostituisce**, comprese
+le misure di centraline. Richiederlo consapevolmente.
+
+Le richieste usano timestamp UTC e un margine per coprire la mezzanotte;
+la conversione a Europe/Rome applica l'ora legale a ciascun timestamp.
+A marzo si salvano 23 ore, senza inventare le 02:00. A ottobre, per scelta
+esplicita, si conserva soltanto la seconda 02:00 (ora solare): 24 righe
+legacy da 25 ore fisiche. Un avviso e il report JSON scaricabile
+`meteo-open-meteo.json` conservano anche l'occorrenza scartata e tutti
+i dati UTC originali.
+
+Analisi/API 0-50%, salvataggio 50-99%, riepilogo 99%, concluso 100%
+dopo disconnect. Scarica blocchi di massimo 13 giorni locali consecutivi,
+valida unita, continuita oraria e valori prima di cancellare qualsiasi
+dato; salva anche il report prima dei DELETE/INSERT. Errori HTTP,
+limiti API, date non disponibili o valori NULL/non validi fanno fallire
+il comando: nessun fallback a previsioni, zeri o altre sorgenti.
+Le scritture sono AutoCommit: un'interruzione puo lasciare un giorno
+parziale; ripristinarlo con Sovrascrivi. Il blocco target e condiviso con
+03-10, ma non coordina 02, script legacy o SQL esterno.
+
+Ogni giorno importato registra in PostgreSQL ARP, quota e impronta delle
+temperature/pressioni effettivamente salvate. La fase 10 usa solo questa
+provenienza e solo dopo la conclusione positiva di 09. Una sostituzione
+invalida lo storico 10, **non azzera A_m o lo stato 3 gia presenti**:
+per aggiornare quote precedenti eseguire **10 con Sovrascrivi**.
+Le vecchie importazioni senza provenienza richiedono 09 con Sovrascrivi.
+
+### Budget delle chiamate
+
+I [limiti pubblici gratuiti](https://open-meteo.com/en/pricing) sono
+600/minuto, 5.000/ora, 10.000/giorno e 300.000/mese. Oltre due settimane o
+dieci variabili, una richiesta puo costare piu di una chiamata: i blocchi
+di 13 giorni locali piu un giorno di margine UTC, con sette variabili,
+restano entro una chiamata per richiesta. Un anno intero senza skip
+richiede normalmente 29 richieste, non una per ora o traccia.
+
+09 verifica il budget prima di scaricare e prenota atomicamente ogni
+tentativo; se insufficiente interrompe prima della richiesta. Conta anche
+errori, timeout e tentativi interrotti, senza rimborso automatico.
+Log, riepilogo e report JSON mostrano consumo e disponibilita stimata.
+Il contatore PostgreSQL e condiviso fra esecuzioni/database della stessa
+installazione e sopravvive alla cancellazione dello storico esecuzioni.
+Usa finestre mobili prudenziali di 1 minuto, 1 ora, 24 ore e 31 giorni.
+**Non e la quota ufficiale dell'IP**: non conosce richieste precedenti
+all'attivazione, altre installazioni o altri client sullo stesso IP.
+Un eventuale HTTP 429 resta un errore esplicito.
+
+La migrazione applicativa 4 crea `weather_api_calls` e `weather_days`
+all'avvio aggiornato, senza modifiche allo schema radar. La provenienza
+e legata all'esecuzione 09: se questa viene eliminata, va ricreata con
+09/Sovrascrivi prima di ricalcolare 10.
+
+Attribuzione: [Open-Meteo.com, CC BY 4.0](https://open-meteo.com/en/licence).
+Il comando usa l'API pubblica gratuita, soggetta ai limiti e all'uso non
+commerciale del servizio: per uso commerciale occorre un piano e una
+successiva configurazione dell'endpoint cliente, qui non implementata.
+Non sono richieste nuove dipendenze o credenziali API.
+
+Test deterministici: `t/unit/carica_meteo.t`, `t/integration/carica_meteo.t`.
+Quest'ultimo richiede `TEST_ONLINE` e `TEST_MYSQL=1` e crea solo database
+temporanei. Per abilitare anche la prova con l'API reale:
+
+```bash
+TEST_MYSQL=1 docker compose --profile test run --rm -e TEST_OPEN_METEO=1 test prove -l t/unit/carica_meteo.t t/integration/carica_meteo.t
+```
+
+## Normalizzazione quote con meteo ARP: 10
+
+`correggi_quote` integra le varianti legacy 1.0 e 1.0+lipo, adattando
+esplicitamente la sorgente meteo all'ARP:
+
+```bash
+perl bin/procedure run correggi_quote --database radar_test --airport LIMC --date-from 2025-09-01 --date-to 2025-10-31
+```
+
+Richiede 08 e un'importazione 09 completata con provenienza verificabile;
+supporta LIMC/LIML/LIME/LIPO, arrivi e decolli. Le date facoltative,
+inclusive, si riferiscono a `data_ora_arr`; senza date considera tutto il
+database. Salta i giorni gia completati salvo Sovrascrivi.
+
+Usa pressione e temperatura dell'**ora contenente** `data_ora_arr`
+(14:37 -> 14:00), come scelto dall'utente, non l'ora futura del legacy.
+Mantiene la formula e l'esponente legacy 5.2525, usando pero la quota ARP
+anziche quella della centralina. Non tronca le quote risultanti negative.
+Non esegue chiamate Open-Meteo: riusa soltanto i dati di 09, verificandone
+aeroporto, coordinate, quota e impronta. Meteo assente, ambiguo o non
+verificabile produce avvisi e skip delle tracce, senza avanzarle a stato 3.
+
+Seleziona normalmente `validation_bt=2`; Sovrascrivi include 2 e 3 e
+ricalcola da Z_m. Aggiorna A_m per battute con Z_m non NULL e validation
+diversa da N/A/NULL (include S, come il legacy), poi porta la traccia a 3.
+Preserva H_m/Z_m/hmod, pista, SID e classificazioni. In Sovrascrivi
+azzera A_m solo delle tracce analizzate e utilizzabili, non di quelle saltate.
+I giorni con tracce saltate non sono segnati completi, consentendo il retry.
+
+Analisi 0-50%, salvataggio 50-99%, riepilogo 99%, concluso 100% dopo
+disconnect. AutoCommit: un errore puo lasciare scritture parziali.
+Gli overwrite 03-06 e 08 eliminano anche A_m obsolete e invalidano lo
+storico 10; 05/06 ripristinano bt=1 anche da bt=3, 08 ricalcola fino a bt=2.
+07 resta indipendente. Nessuna modifica agli script legacy.
+
+Verifiche: `t/unit/correggi_quote.t`, `t/integration/carica_meteo.t` e
+`t/integration/validation_window.t`, con dati sintetici e database temporanei.
+
+## Intervallo temporale e sovrascrittura: 03-08
+
+I sei form espongono **Dal giorno**, **Al giorno** (estremi inclusi)
 e **Sovrascrivi e azzera i risultati dipendenti**, disattivato per default.
+07 e 08 hanno un'etichetta specifica per il proprio ricalcolo.
 Le date sono facoltative ma vanno indicate entrambe: senza date si
 considerano tutti i giorni del database. Sono disponibili anche da CLI/API
 come `date_from`, `date_to`, `overwrite`:
@@ -238,7 +423,7 @@ perl bin/procedure run valida_tracce --database radar_test --airport LIME --date
 perl bin/procedure run valida_battute --database radar_test --date-from 2026-11-01 --date-to 2026-11-02 --overwrite
 ```
 
-Per 03-06 il giorno e quello di `flay.data_ora_italy`, non `data` UTC.
+Per 03-06 e 08 il giorno e quello di `flay.data_ora_italy`, non `data` UTC.
 **07 usa invece `flay.data_ora_arr`, come il relativo legacy**, per scelta
 esplicita dell'utente; questo campo e calcolato da 04.
 Una traccia selezionata e elaborata con
@@ -266,6 +451,11 @@ La sovrascrittura ricalcola il passaggio richiesto e azzera i dati dipendenti:
 | 05 | Ripristina le battute `X` a `Y`, conserva l'esito di 04; ricalcola pista/SID degli arrivi |
 | 06 | Conserva l'esito di 04; azzera pista/SID dei decolli e ricalcola la pista |
 | 07 | Ricalcola solo la SID dei decolli, senza modificare pista, validazioni o battute |
+| 08 | Ricalcola Z_m/hmod da H_m per arrivi e decolli con pista e validation_bt 1 o 2 |
+
+Gli overwrite 03-06 azzerano anche Z_m/hmod dipendenti nei giorni e nelle
+tracce interessate. Gli overwrite 05/06 accettano anche `validation_bt=2`,
+riportandolo a 1 prima di riassegnare la pista. H_m resta invariato.
 
 Per 04 sono ricalcolabili gli esiti `Y/L/D/P`, non gli scarti `N` di 03.
 Per 05/06 sono ricalcolabili le tracce validate da 04 e quelle invalidate
@@ -278,6 +468,8 @@ alle coordinate/quote eventualmente eseguite da altri script legacy.
 
 Ricalcolare 03 invalida anche lo storico di 04/05/06; ricalcolare 04 quello
 di 05/06. 05 e 06 sono indipendenti; 07 dipende da 06 e dalle validazioni.
+03-06 invalidano anche lo storico di 08 sui giorni locali; 07 e 08
+non si invalidano reciprocamente, perche 07 usa H_m, non Z_m.
 Per 03/04/06 si invalida anche lo storico di 07 nei giorni `data_ora_arr`
 dei decolli interessati, che possono differire dai giorni locali scelti.
 Per 03/04 si considerano anche i giorni delle rispettive battute: 04 puo
@@ -291,7 +483,7 @@ sono valide solo se termina con successo l'intera esecuzione richiesta.
 La migrazione PostgreSQL viene applicata automaticamente all'avvio
 aggiornato di app/worker; non vengono aggiunte tabelle ai database radar.
 
-## Avanzamento dei comandi 03-07
+## Avanzamento dei comandi 03-08
 
 La barra include tutte le fasi: 0-50% analisi delle tracce, 50-99% salvataggio
 nel database, 99% riepilogo finale e 100% al termine del comando.
@@ -299,6 +491,8 @@ Il salvataggio di 04 comprende gli stati di battute/tracce e le date
 di decollo/atterraggio, mostrate come passaggi distinti.
 Per 05/06 comprende piste, stati delle tracce ed eventuali battute `X`;
 il 100% viene emesso solo dopo la chiusura della connessione.
+Per 08 il salvataggio conta ogni aggiornamento delle quote e dello stato
+della traccia; il 100% segue anche la registrazione dello storico.
 Le scritture possono quindi richiedere tempo dopo l'analisi. Le percentuali indicano il lavoro
 completato nelle fasi, non il tempo residuo stimato. Lo stato resta `running`
 finche il comando non termina.

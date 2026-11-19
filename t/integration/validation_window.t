@@ -12,6 +12,7 @@ use ScriptManager::Command::ValidaBattute;
 use ScriptManager::Command::TrovaPistaAtterraggi;
 use ScriptManager::Command::TrovaPistaDecolli;
 use ScriptManager::Command::AssegnaSID;
+use ScriptManager::Command::RettificaQuote;
 
 plan skip_all => 'Richiede TEST_ONLINE e TEST_MYSQL=1'
     unless TestHelper::online() && ($ENV{TEST_MYSQL} // '') eq '1';
@@ -66,7 +67,7 @@ $admin->do(q{
 $admin->do(q{
     CREATE TABLE battute (
       row_id INT PRIMARY KEY AUTO_INCREMENT, flay_id INT, time_italy DATETIME,
-      X_m DOUBLE, Y_m DOUBLE, H_m DOUBLE, validation CHAR(1)
+      X_m DOUBLE, Y_m DOUBLE, H_m DOUBLE, validation CHAR(1), Z_m DOUBLE, hmod CHAR(1), A_m DOUBLE
     ) ENGINE=MyISAM
 });
 for my $id (1 .. 8) {
@@ -85,7 +86,7 @@ for my $id (1 .. 8) {
 
 my %classes = (3 => 'ScriptManager::Command::ValidaTracce', 4 => 'ScriptManager::Command::ValidaBattute',
     5 => 'ScriptManager::Command::TrovaPistaAtterraggi', 6 => 'ScriptManager::Command::TrovaPistaDecolli',
-    7 => 'ScriptManager::Command::AssegnaSID');
+    7 => 'ScriptManager::Command::AssegnaSID', 8 => 'ScriptManager::Command::RettificaQuote');
 my $target = join ':', lc($ENV{MYSQL_HOST}), $ENV{MYSQL_PORT} // 3306, $schema;
 my $last_id;
 sub run_stage ($stage, %extra) {
@@ -309,12 +310,128 @@ subtest '06 e 04 invalidano 07 sulla data dei decolli, anche se cambia giorno' =
     is_deeply days('assegna_sid'), [], 'invalidati sia il vecchio giorno 5 sia quello nuovo 7';
 };
 
+subtest '08: arrivi e decolli, date locali, ordine, filtri battute e copia quote' => sub {
+    for my $id (20 .. 29) {
+        my $date = $id == 22 ? '2026-11-11 00:00:00' : $id == 23 ? undef
+            : $id == 21 ? '2026-11-10 23:59:59' : '2026-11-10 00:00:00';
+        $admin->do('INSERT INTO flay (row_id, flay_operation, data_ora_italy, data_ora_arr, validation_fl, validation_bt, pista, sid) '
+            . 'VALUES (?, ?, ?, ?, ?, ?, ?, ?)', undef, $id, $id % 2 ? 'D' : 'A',
+            $date, '2026-11-12 12:00:00', $id == 24 ? 'M' : 'Y', $id == 25 ? 2 : 1,
+            $id == 26 ? undef : '29', 'KEEP');
+        for my $i (2, 0, 1) {
+            $admin->do('INSERT INTO battute (flay_id, time_italy, X_m, Y_m, H_m, validation, Z_m, hmod) '
+                . 'VALUES (?, ?, ?, ?, ?, ?, ?, ?)', undef, $id, sprintf('2026-11-10 12:00:%02d', $i),
+                10 * $i, 0, $id == 27 ? 0 : $i == 1 ? 0 : ($i + 1) * 100,
+                $id == 20 && $i == 1 ? 'X' : $id == 21 && $i == 1 ? 'T' : 'Y',
+                $id == 25 ? 999 : undef, $id == 25 ? 'M' : undef);
+        }
+    }
+    $admin->do('DELETE FROM battute WHERE flay_id = 28 ORDER BY row_id LIMIT 1');
+    $admin->do(q{UPDATE battute SET Z_m=777, hmod='M' WHERE flay_id=29 AND H_m=0});
+    for my $flag ('N', 'A', 'S', undef) {
+        $admin->do('INSERT INTO battute (flay_id, H_m, validation, Z_m, hmod) VALUES (?, ?, ?, ?, ?)',
+            undef, 20, 0, $flag, 999, 'M');
+    }
+    my $r = run_stage(8, date_from => '2026-11-10', date_to => '2026-11-10');
+    is_deeply [@{$r->{data}}{qw(tracks interpolated copied skipped_tracks)}], [3, 2, 6, 2];
+    for my $id (20, 21) {
+        is_deeply $admin->selectall_arrayref(
+            'SELECT H_m, Z_m, hmod FROM battute WHERE flay_id=? AND validation IN (?,?,?) ORDER BY time_italy, row_id',
+            undef, $id, 'Y', 'X', 'T'), [[100, 100, undef], [0, 200, 'M'], [300, 300, undef]],
+            'quote corrette in ordine cronologico, incluse X e T';
+        is_deeply [@{track_state($id)}[0 .. 3]], ['Y', 2, '29', 'KEEP'], 'solo validation_bt avanza';
+    }
+    for my $id (22, 23, 24, 26, 27, 28) {
+        is $admin->selectrow_array('SELECT COUNT(*) FROM battute WHERE flay_id=? AND Z_m IS NOT NULL', undef, $id),
+            0, "traccia $id esclusa o non rettificabile";
+    }
+    is $admin->selectrow_array('SELECT MIN(Z_m) FROM battute WHERE flay_id=25'), 999, 'bt=2 preservata senza overwrite';
+    is $admin->selectrow_array('SELECT Z_m FROM battute WHERE flay_id=29 AND H_m=0'), 777, 'hmod M preservata';
+    is $admin->selectrow_array('SELECT COUNT(*) FROM battute WHERE flay_id=20 AND Z_m=999'), 4,
+        'N, A, S e NULL esclusi';
+    is_deeply days('rettifica_quote'), ['2026-11-10'];
+    $r = run_stage(8, date_from => '2026-11-10', date_to => '2026-11-10');
+    is_deeply $r->{data}{days_skipped}, ['2026-11-10'];
+    run_stage(8, date_from => '2026-11-10', date_to => '2026-11-10', overwrite => 1);
+    is $admin->selectrow_array('SELECT Z_m FROM battute WHERE flay_id=25 AND H_m=0'), 200,
+        'overwrite include bt=2 e ricalcola da H_m, non da Z_m';
+    is $admin->selectrow_array('SELECT Z_m FROM battute WHERE flay_id=29 AND H_m=0'), 200;
+    is $admin->selectrow_array('SELECT COUNT(*) FROM battute WHERE flay_id=20 AND Z_m=999'), 4,
+        'overwrite non azzera battute escluse';
+    is_deeply [@{track_state(20)}[0 .. 3]], ['Y', 2, '29', 'KEEP'];
+};
+
+subtest '08: analisi prima del reset e recupero dopo scrittura fallita' => sub {
+    my $before = $admin->selectall_arrayref('SELECT row_id, Z_m, hmod FROM battute ORDER BY row_id');
+    my $guard = $repo->lock_validation_target($target);
+    eval { run_stage(8, date_from => '2026-11-10', date_to => '2026-11-10', overwrite => 1) };
+    ok(ScriptManager::Exception->caught($@, 'validation_busy'), '08 rispetta il blocco comune per database');
+    undef $guard;
+    $admin->do('UPDATE battute SET X_m = NULL WHERE flay_id=20 AND H_m=0 AND validation IS NOT NULL');
+    eval { run_stage(8, date_from => '2026-11-10', date_to => '2026-11-10', overwrite => 1) };
+    ok(ScriptManager::Exception->caught($@, 'invalid_hit'));
+    is_deeply $admin->selectall_arrayref('SELECT row_id, Z_m, hmod FROM battute ORDER BY row_id'), $before,
+        'errore di analisi non azzera quote esistenti';
+    $admin->do('UPDATE battute SET X_m=10 WHERE flay_id=20 AND H_m=0');
+    eval { run_stage(8, date_from => '2026-11-10', date_to => '2026-11-10', overwrite => 1, fail_write => 1) };
+    like "$@", qr/write failed after update/;
+    is_deeply days('rettifica_quote'), [], 'storico invalidato prima delle scritture';
+    cmp_ok $repo->get_execution($last_id)->{progress}, '<', 100;
+    run_stage(8, date_from => '2026-11-10', date_to => '2026-11-10', overwrite => 1);
+    is $admin->selectrow_array('SELECT Z_m FROM battute WHERE flay_id=20 AND H_m=0 AND validation=?',
+        undef, 'X'), 200;
+};
+
+subtest '03-06 invalidano 08 e gli overwrite ripristinano quote e stato ricalcolabile' => sub {
+    run_stage(5, date_from => '2026-11-10', date_to => '2026-11-10', overwrite => 1);
+    is_deeply days('rettifica_quote'), [], '05 invalida storico 08';
+    is track_state(20)->[1], 1, '05 overwrite include bt=2 e torna allo stato 04';
+    is $admin->selectrow_array('SELECT COUNT(*) FROM battute WHERE flay_id=20 AND Z_m IS NOT NULL'), 0,
+        'rettifiche obsolete eliminate';
+    is track_state(21)->[1], 2, '05 non modifica i decolli';
+    $admin->do(q{UPDATE battute SET X_m=COALESCE(X_m, 0), Y_m=COALESCE(Y_m, 0),
+        time_italy=COALESCE(time_italy, '2026-11-10 12:00:03') WHERE flay_id=20});
+    for my $stage (6, 4, 3) {
+        $repo->complete_validation_days($target, 'rettifica_quote', ['2026-11-10'], $last_id);
+        run_stage($stage, date_from => '2026-11-10', date_to => '2026-11-10', overwrite => 1);
+        is_deeply days('rettifica_quote'), [], "$stage invalida storico 08";
+    }
+    is track_state(24)->[0], 'M', 'traccia unita intatta anche dopo reset upstream';
+    is $admin->selectrow_array('SELECT COUNT(*) FROM battute WHERE flay_id=25 AND hmod IS NOT NULL'), 0;
+};
+
+subtest '03-06 e 08: overwrite elimina A_m da bt=3 e invalida 10 sulle date effettive' => sub {
+    my $id = 40;
+    for my $stage (3, 4, 5, 6, 8) {
+        $admin->do(q{INSERT INTO flay
+            (row_id, flay_operation, data_ora_italy, data_ora_arr, validation_fl, validation_bt, pista, sid)
+            VALUES (?, ?, '2026-11-20 12:00:00', '2026-11-21 12:00:00', 'Y', 3, '11', 'KEEP')},
+            undef, $id, $stage == 6 ? 'D' : 'A');
+        for my $i (0 .. 7) {
+            $admin->do(q{INSERT INTO battute (flay_id, time_italy, X_m, Y_m, H_m, validation, Z_m, A_m)
+                VALUES (?, ?, ?, 0, 300, 'Y', 300, 555)}, undef, $id,
+                sprintf('2026-11-22 12:00:%02d', $i), 100 * $i);
+        }
+        $repo->complete_validation_days($target, 'correggi_quote', ['2026-11-21', '2026-11-22'], $last_id);
+        run_stage($stage, date_from => '2026-11-20', date_to => '2026-11-20', overwrite => 1);
+        is $admin->selectrow_array('SELECT COUNT(*) FROM battute WHERE flay_id=? AND A_m IS NOT NULL', undef, $id),
+            0, "$stage: quote normalizzate obsolete eliminate anche da bt=3";
+        ok !grep({ $_ eq '2026-11-21' } @{days('correggi_quote')}), "$stage: invalida data_ora_arr, non data_ora_italy";
+        ok !grep({ $_ eq '2026-11-22' } @{days('correggi_quote')}), "$stage: invalida anche il giorno di ricalcolo 04"
+            if $stage <= 4;
+        is track_state($id)->[1], 2, '08 ricalcola da bt=3 e termina a bt=2' if $stage == 8;
+        $admin->do('DELETE FROM battute WHERE flay_id=?', undef, $id);
+        $admin->do('DELETE FROM flay WHERE row_id=?', undef, $id);
+        $id++;
+    }
+};
+
 subtest 'form web: due selettori data e sovrascrittura non preselezionata' => sub {
     my $root = $app->home;
     local $ENV{MRT_CONFIG_FILE} = $root->child('config', 'MRT.example.json')->to_string;
     my $web = TestHelper::mojo(paths => {procedures_file => $root->child('config', 'procedures.yml')->to_string});
     Log::Any::Adapter->set('Null');
-    for my $code (qw(valida_tracce valida_battute trova_pista_atterraggi trova_pista_decolli assegna_sid)) {
+    for my $code (qw(valida_tracce valida_battute trova_pista_atterraggi trova_pista_decolli assegna_sid rettifica_quote)) {
         $web->get_ok("/procedures/$code")->status_is(200)
             ->element_exists('input[type=date][name=date_from]')
             ->element_exists('input[type=date][name=date_to]')

@@ -89,3 +89,24 @@ create table validation_days (
 
 -- 3 down
 drop table if exists validation_days;
+
+-- 4 up
+create table weather_api_calls (
+  id            bigserial primary key,
+  execution_id  uuid references executions(id) on delete set null,
+  reserved_at   timestamptz not null default clock_timestamp(),
+  status        text not null default 'reserved' check (status in ('reserved', 'succeeded', 'failed'))
+);
+create index weather_api_calls_time_idx on weather_api_calls(reserved_at);
+create table weather_days (
+  target        text not null,
+  day           date not null,
+  execution_id  uuid not null references executions(id) on delete cascade,
+  location      jsonb not null,
+  fingerprint   text not null,
+  primary key (target, day)
+);
+
+-- 4 down
+drop table if exists weather_days;
+drop table if exists weather_api_calls;

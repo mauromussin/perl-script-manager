@@ -10,9 +10,10 @@ has days => sub { [] };
 has skipped => sub { [] };
 
 my %CODES = (3 => 'valida_tracce', 4 => 'valida_battute',
-    5 => 'trova_pista_atterraggi', 6 => 'trova_pista_decolli', 7 => 'assegna_sid');
+    5 => 'trova_pista_atterraggi', 6 => 'trova_pista_decolli', 7 => 'assegna_sid',
+    8 => 'rettifica_quote', 10 => 'correggi_quote');
 
-sub date_column ($self) { return $self->stage == 7 ? 'data_ora_arr' : 'data_ora_italy' }
+sub date_column ($self) { return $self->stage == 7 || $self->stage == 10 ? 'data_ora_arr' : 'data_ora_italy' }
 
 sub configure_schema ($class, $schema) {
     for my $field (['date_from', 'Dal giorno (incluso)', 10], ['date_to', 'Al giorno (incluso)', 11]) {
@@ -55,7 +56,7 @@ sub prepare ($self) {
     my $date = $self->date_column;
     $self->ctx->validation_guard($repo->lock_validation_target($self->target));
     my ($where, @bind) = ("(validation_fl IS NULL OR validation_fl <> 'M')");
-    if ($self->stage >= 5) {
+    if ($self->stage >= 5 && $self->stage <= 7) {
         $where .= ' AND flay_operation = ?';
         push @bind, $self->stage == 5 ? 'A' : 'D';
     }
@@ -103,7 +104,7 @@ sub filter ($self, $alias = '') {
     my $sql = " AND (${prefix}validation_fl IS NULL OR ${prefix}validation_fl <> 'M')"
         . " AND DATE($prefix$date) IN (" . join(',', ('?') x @{$self->days}) . ')';
     my @bind = @{$self->days};
-    if ($self->stage >= 5) {
+    if ($self->stage >= 5 && $self->stage <= 7) {
         $sql .= " AND ${prefix}flay_operation = ?";
         push @bind, $self->stage == 5 ? 'A' : 'D';
     }
@@ -113,7 +114,7 @@ sub filter ($self, $alias = '') {
 sub runway_candidates ($self, $alias = '') {
     die "Alias SQL non valido\n" unless $alias =~ /\A(?:f)?\z/;
     my $p = length $alias ? "$alias." : '';
-    return "(${p}validation_bt = 1 OR (${p}validation_fl = 'P' AND ${p}validation_bt = 0 AND ${p}pista LIKE 'N%'))";
+    return "(${p}validation_bt IN (1, 2, 3) OR (${p}validation_fl = 'P' AND ${p}validation_bt = 0 AND ${p}pista LIKE 'N%'))";
 }
 
 sub start_saving ($self) {
@@ -121,6 +122,9 @@ sub start_saving ($self) {
     $self->ctx->check_cancel;
     my @stages = $self->stage == 3 ? (3, 4, 5, 6) : $self->stage == 4 ? (4, 5, 6) : ($self->stage);
     $self->ctx->repo->invalidate_validation_days($self->target, [map { $CODES{$_} } @stages], $self->days);
+    if ($self->stage <= 6) {
+        $self->ctx->repo->invalidate_validation_days($self->target, [$CODES{8}], $self->days);
+    }
     if ($self->stage == 3 || $self->stage == 4 || $self->stage == 6) {
         my ($filter, @bind) = $self->filter('f');
         my $sql = 'SELECT DISTINCT DATE(f.data_ora_arr) AS day FROM flay f '
@@ -136,10 +140,35 @@ sub start_saving ($self) {
         my $sid_days = $self->db->selectcol_arrayref($sql, undef, @values);
         $self->ctx->repo->invalidate_validation_days($self->target, [$CODES{7}], $sid_days);
     }
+    if ($self->stage <= 6 || $self->stage == 8) {
+        my ($filter, @bind) = $self->filter('f');
+        my $sql = "SELECT DISTINCT DATE(f.data_ora_arr) FROM flay f WHERE f.data_ora_arr IS NOT NULL $filter";
+        my @values = @bind;
+        if ($self->stage <= 4) {
+            $sql .= ' UNION SELECT DISTINCT DATE(b.time_italy) FROM battute b JOIN flay f ON f.row_id = b.flay_id '
+                . "WHERE b.time_italy IS NOT NULL $filter";
+            push @values, @bind;
+        }
+        my $days = $self->db->selectcol_arrayref($sql, undef, @values);
+        $self->ctx->repo->invalidate_validation_days($self->target, [$CODES{10}], $days);
+    }
     return unless $self->overwrite;
+    return if $self->stage == 10; # Reset only analyzed, usable tracks inside the command, not skipped tracks.
     my ($filter, @bind) = $self->filter('f');
     my $db = $self->db;
     $self->ctx->log(warning => 'Azzeramento dei risultati dipendenti nei soli giorni selezionati; AutoCommit senza rollback');
+    if ($self->stage <= 6 || $self->stage == 8) {
+        my $eligible = $self->stage == 4 ? q{ AND f.validation_fl IN ('Y','L','D','P')}
+            : $self->stage == 5 || $self->stage == 6 ? ' AND ' . $self->runway_candidates('f')
+            : $self->stage == 8 ? ' AND f.validation_bt IN (1, 2, 3) AND f.pista IS NOT NULL' : '';
+        $db->do('UPDATE battute b JOIN flay f ON f.row_id = b.flay_id SET b.A_m = NULL '
+            . "WHERE 1=1 $filter $eligible", undef, @bind);
+        $self->ctx->check_cancel;
+        my $hits = $self->stage == 8 ? q{ AND b.validation NOT IN ('N','A','S')} : '';
+        $db->do('UPDATE battute b JOIN flay f ON f.row_id = b.flay_id SET b.Z_m = NULL, b.hmod = NULL '
+            . "WHERE 1=1 $filter $eligible $hits", undef, @bind);
+        $self->ctx->check_cancel;
+    }
     if ($self->stage <= 4) {
         $filter .= q{ AND f.validation_fl IN ('Y','L','D','P')} if $self->stage == 4;
         $db->do('UPDATE battute b JOIN flay f ON f.row_id = b.flay_id SET b.validation = NULL WHERE 1=1'
@@ -152,6 +181,10 @@ sub start_saving ($self) {
     elsif ($self->stage == 7) {
         $db->do('UPDATE flay f SET f.sid = NULL WHERE f.validation_bt > ? AND f.pista IS NOT NULL'
             . $filter, undef, 0, @bind);
+    }
+    elsif ($self->stage == 8) {
+        $db->do('UPDATE flay f SET f.validation_bt = 1 WHERE f.validation_bt IN (2, 3) AND f.pista IS NOT NULL'
+            . $filter, undef, @bind);
     }
     else {
         my $eligible = $self->runway_candidates('f');
@@ -170,8 +203,10 @@ sub start_saving ($self) {
 
 sub finish ($self, $result) {
     $self->ctx->check_cancel;
+    my %incomplete = $self->stage == 10 ? map { $_ => 1 } @{$result->{data}{incomplete_days} // []} : ();
+    my @completed = grep { !$incomplete{$_} } @{$self->days};
     $self->ctx->repo->complete_validation_days(
-        $self->target, $CODES{$self->stage}, $self->days, $self->ctx->execution_id);
+        $self->target, $CODES{$self->stage}, \@completed, $self->ctx->execution_id);
     $result->{data}{days_processed} = $self->days;
     $result->{data}{days_skipped} = $self->skipped;
     $result->{message} .= '; ' . scalar(@{$self->skipped}) . ' giorni saltati' if @{$self->skipped};

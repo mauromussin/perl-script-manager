@@ -118,7 +118,7 @@ procedure eseguibili dell'applicazione.
   esplicito, successo implicito se arriva in fondo. Durata tipica e
   consumo non misurati; una lettura delle battute e UPDATE per traccia.
 - Modulo di destinazione: `ScriptManager::Command::ValidaTracce`.
-  Parametri `database` e `airport`, piu intervallo/sovrascrittura comuni a 03-07;
+  Parametri `database` e `airport`, piu intervallo/sovrascrittura comuni a 03-08;
   credenziali server tramite `MYSQL_*`,
   scelte aeroporto da `MRT_CONFIG_FILE`/`config/local/MRT.json`.
   Il controllo attuale di `run` ammette solo LIME e LIPO, anche se lo
@@ -184,7 +184,7 @@ procedure eseguibili dell'applicazione.
   Non costituisce esecuzione integrale del legacy ne certificazione MySQL reale.
 - Modulo di destinazione: `ScriptManager::Command::ValidaBattute`.
 - Integrazione: `valida_battute`, asincrono/esclusivo, parametro `database`,
-  intervallo/sovrascrittura comuni a 03-07, credenziali server.
+  intervallo/sovrascrittura comuni a 03-08, credenziali server.
   Completamento date e riepilogo sono limitati ai giorni selezionati non
   saltati, diversamente dal riepilogo globale legacy.
   Analisi 0-50%, salvataggio 50-99% (UPDATE delle battute
@@ -249,7 +249,7 @@ procedure eseguibili dell'applicazione.
   degli UPDATE; dati numerici non validi o geometria mancante/degenere
   interrompono prima delle scritture. Analisi 0-50%, salvataggio 50-99%,
   riepilogo 99%, concluso 100% dopo disconnect. AutoCommit senza rollback;
-  blocco condiviso 03-07 sullo stesso server/porta/database.
+  blocco condiviso 03-08 sullo stesso server/porta/database.
 
 ## 06-trova_pista_decolli_1.1.pl
 
@@ -353,19 +353,274 @@ procedure eseguibili dell'applicazione.
   ordinamento cronologico, SID esistenti, skip, overwrite e dipendenze.
   Nessuna certificazione su tracce operative.
 
-## Controlli temporali comuni dei comandi migrati 03-07
+## 08-rettifica_quote_nulle_1.1.pl
+
+- Varianti trovate: una sola, revisione 1.1; intestazione con revisioni
+  29/11/2005 e 22/02/2007. Nessuna modifica allo script originale.
+- Input legacy: host (default localhost), database, aeroporto convertito
+  in maiuscolo ma mai usato, utente/password in chiaro; `/help`.
+  Dipendenza DBI/MySQL, nessuna variabile d'ambiente o processo esterno.
+- Selezione verificata: flay con `validation_bt=1` e pista non NULL,
+  **senza filtro A/D**, nonostante il commento parli di decolli.
+  Nessun intervallo temporale e nessun filtro aeroporto.
+  Battute della traccia con validation diversa da N/A/S: SQL esclude
+  anche NULL, include Y/X/T/L. Nessun ORDER BY. Meno di tre battute:
+  next senza avanzamento dello stato.
+- Algoritmo verificato: per H_m=0 e hmod diverso da M interpola in base
+  alle distanze euclidee XY, usando H_m originali non zero, mai Z_m;
+  estrapola prima/ultima battuta da due ancore, tronca le quote negative
+  a zero. hmod M non rielaborato. Il codice non copia le quote H_m non zero
+  in Z_m, contrariamente all'help che lo dichiara.
+- Effetti: UPDATE Z_m/hmod=M per le battute corrette, poi validation_bt=2
+  per la traccia anche quando non corregge alcuna quota. Non modifica
+  H_m, pista, SID, coordinate o classificazione battute.
+  Report Windows in append, apertura non verificata; stampa tracce e
+  conteggio quote corrette. AutoCommit senza rollback; errori DB con die.
+  Durata e memoria non misurate; tutte le battute di una traccia in memoria.
+- Difetti verificati/caratterizzati: ultimo punto escluso dalla ricerca
+  dell'ancora successiva interna (`100,0,300` produce erroneamente 0);
+  controlli di tutte-zero irraggiungibili nei rami senza ancore, con
+  generazione di UPDATE senza quota; variabili globali non azzerate tra
+  punti/tracce possono riciclare distanze/quote. SQL interpolato, ordinamento
+  implicito, tabella FLAY maiuscola nell'UPDATE (rischio case-sensitive).
+- Decisioni esplicite dell'utente: arrivi e decolli, intervallo su
+  `data_ora_italy`; ordinamento `time_italy,row_id`; includere l'ultima
+  ancora; ancore non zero piu vicine, estrapolazione anche per sequenze
+  di zeri iniziali/finali; una sola ancora -> quota costante; nessuna
+  ancora -> avviso e nessuna rettifica. Copiare anche H_m non zero in
+  Z_m, come l'help. Distanza nulla -> quota dell'ancora con avviso.
+- Migrazione: `ScriptManager::Command::RettificaQuote`, codice
+  `rettifica_quote`, asincrono/esclusivo, timeout 3600 secondi.
+  Database e controlli comuni date/skip/overwrite; nessun aeroporto
+  richiesto. Mantiene filtro validation e minimo tre battute.
+  Numerici mancanti/non finiti rifiutati prima di scrivere.
+  Analisi completa prima dei reset; SQL con placeholder.
+  Quote originali copiate con hmod NULL; interpolate con M; tracce
+  rettificabili avanzano a bt=2 solo dopo le rispettive scritture.
+  Riepilogo persistente al posto del file legacy.
+- Overwrite: include bt=1/2/3 con pista, ricalcola da H_m ignorando
+  hmod M; azzera solo Z_m/hmod delle battute ammesse, non N/A/S/NULL.
+  Azzera anche A_m delle tracce interessate e invalida lo storico 10.
+  Tracce tutte-zero o con meno di tre battute sono
+  segnalate senza avanzamento; l'esecuzione puo completarsi con avvisi
+  e registra i giorni: dopo correzioni manuali richiedere overwrite.
+  Non ricalcola SID/pista o coordinate.
+- Dipendenze: condivide blocco target con 03-10; 03-06 invalidano lo
+  storico 08 sulle date locali, i loro overwrite eliminano Z_m/hmod
+  obsoleti. 05/06 overwrite accettano bt=2/3 e ripristinano bt=1.
+  07 usa H_m e modifica solo SID: nessuna invalidazione reciproca con 08.
+- Verifiche: `t/unit/rettifica_quote.t` estrae ed esegue il ciclo
+  originale con DB simulato, confronta i casi definiti e separa le
+  correzioni approvate; testa estremi, zeri consecutivi, ancore mancanti,
+  distanze nulle, hmod M, copia quote, errori, annullamento e progresso.
+  `t/integration/validation_window.t` usa database temporanei MyISAM e
+  PostgreSQL per date, filtri, ordinamento, skip, overwrite, stati,
+  dipendenze, errori prima/dopo reset e form web. Nessuna scrittura
+  operativa o nuova dipendenza.
+
+## Gruppo 09-carica_dati_meteo*
+
+- Varianti: 1.3, 1.4, 1.5, 1.6. Revisione 1.4 del 01/09/2008;
+  1.5 dichiara Ferno 07/09/2020 e LIPO 06/04/2021; 1.6 non riporta la
+  seconda data, ma contiene un ramo LIPO separato equivalente a 1.5.
+  Nessuna modifica agli script originali.
+- Input legacy: host, database, ICAO, utente/password in chiaro, cartella
+  e nome file, numero righe di intestazione, separatore; per LIMC
+  centralina 1 CGP, 2 Lonate (1.3/1.4) o Ferno (1.5/1.6), 3 Somma.
+  DBI/MySQL, nessun processo esterno o variabile d'ambiente.
+- Lettura verificata: file senza controllo di open, eliminazione degli
+  spazi, split con separatore interpretato come regex (non parser CSV),
+  virgole trasformate in punti. Dieci campi destinazione: data_ora,
+  precipitazione_mm, temperatura_C, direzione_vento1/2, velocita_vento,
+  umidita_relativa, radiazione_netta/globale, pressione_hpa.
+  `*` e stringa vuota diventano NULL. convertiData riordina giorno/mese/anno;
+  1.3 converte 24.00.00 in 23.59.59, 1.4-1.6 24:00:00 in 23:59:59,
+  senza passare al giorno successivo.
+- Destinazioni: CGP -> meteo_cgp; 1.3 Lonate/Somma -> meteo_lonate/meteo_somma;
+  dalla 1.4 entrambi -> meteo. LIML/LIME -> meteo; LIPO dalla 1.5.
+  Solo INSERT con placeholder; nessun controllo duplicati o date, nessun
+  aggiornamento flay/battute. Inserimenti falliti stampati ma il ciclo continua;
+  conteggio finale comprende intestazioni e incremento di fine ciclo.
+  AutoCommit, durata/memoria non misurate. Dalla 1.4 log Windows aperto
+  prima dell'input database/utente, senza verifica di apertura.
+- Differenze di conversione: 1.3 ha un ordine colonne LIME/Lonate
+  diverso da quello standard 1.4-1.6; radiazione netta non valorizzata.
+  LIML mantiene il tracciato standard. CGP applica 1.3332 alla pressione,
+  fattore compatibile con mmHg->hPa (unita del file originario non verificata).
+  Somma lascia la pressione NULL. 1.6 separa LIPO senza modificarne la mappa.
+- Caratterizzazione: `t/unit/carica_meteo.t` estrae solo le funzioni
+  originali, in package isolati, e verifica mappe, LIPO assente/presente,
+  CGP/Somma, valore mancante e ora 24; nessun accesso a file operativi/DB.
+- Sostituzione richiesta: `ScriptManager::Command::CaricaMeteo`,
+  comando `carica_meteo` / 09-carica_dati_meteo, asincrono/esclusivo,
+  timeout 3600 secondi. Client `ScriptManager::Service::OpenMeteo`;
+  database/aeroporto e **date obbligatorie**, non piu file/centraline.
+  Nessuna nuova dipendenza: HTTP/JSON di Mojolicious, date/TZ di Perl/POSIX.
+- Fonte verificata: [Historical Weather API](https://open-meteo.com/en/docs/historical-weather-api),
+  endpoint HTTPS archive-api.open-meteo.com/v1/archive, modello best_match.
+  Non usa il Forecast API per sostituire dati storici mancanti.
+  Si tratta di rianalisi/output modellistici, non misure in situ.
+  Invio esclusivo di coordinate geografiche pubbliche, quota e date;
+  nessuna credenziale MySQL o traccia radar esce dall'app.
+- ARP WGS84 di riferimento, da verificare contro l'AIP applicabile:
+  - LIMC: 45 37 48 N, 008 43 23 E;
+  - LIML: 45 26 58 N, 009 16 42 E;
+    fonte [gestore SEA, dati tecnici](https://milanairports.com/en/group/technical-data).
+  - LIME: 45 40 08 N, 009 42 01 E;
+    fonte [copia AIP AD 2 LIME 1-1](https://www.nextdigital.it/apps/aip/browse/ad/ADPME1-1).
+  - LIPO: 45 25 44 N, 010 19 50 E;
+    fonte [copia AIP AD 2 LIPO 1-1](https://www.nextdigital.it/apps/aip/browse/ad/ADPPO1-1).
+  Le coordinate LAT_aerop/LONG_aerop del DB sono proiettate, non WGS84:
+  non vengono inviate all'API o convertite assumendo un EPSG non verificato.
+  Quota da anagrafica.aeroporti.QUOTA_aerop, senza default se mancante.
+  L'API sceglie una cella di griglia vicina: il report distingue ARP
+  richiesto e coordinate effettivamente restituite, non promette una
+  misura puntuale sul sedime.
+- Mappa nuova, unita API validate: precipitation -> precipitazione_mm (mm
+  nell'ora precedente), temperature_2m -> temperatura_C (C),
+  wind_direction_10m -> direzione_vento1 (gradi), wind_speed_10m ->
+  velocita_vento (m/s), relative_humidity_2m -> umidita_relativa (%),
+  shortwave_radiation -> radiazione_globale (W/m2 medi ora precedente),
+  surface_pressure -> pressione_hpa (**alla quota ARP**, non MSL).
+  Valori su campi interi arrotondati all'intero piu vicino.
+  direzione_vento2 e radiazione_netta NULL, senza inventare equivalenze.
+- Decisioni esplicite: destinazione tabella legacy meteo, anche mescolando
+  fonti; giorni gia presenti saltati se hanno almeno una riga, anche
+  parziale. Sovrascrivi sostituisce interamente i soli giorni richiesti,
+  **anche cancellando misure di centraline**; meteo_cgp intatta.
+  Nessuna tabella aggiunta/migrazione radar, nessuna modifica flay/battute.
+  Non usa validation_days: la presenza in meteo determina lo skip.
+- Ora locale: API UTC/unixtime, precedente giorno UTC incluso nella
+  richiesta e filtro finale ai soli giorni italiani scelti. Conversione
+  Europe/Rome con DST per timestamp, non offset fisso dell'API.
+  Marzo: 23 ore. Ottobre: 25 ore fisiche ridotte a 24 righe, **seconda
+  02:00/ora solare** conservata, come scelto dall'utente.
+  Avviso persistente e report scaricabile meteo-open-meteo.json con
+  entrambe le ore UTC, dati originali, ARP/quota, URL, unita e attribuzione.
+- Affidabilita: richieste in blocchi di massimo 13 giorni locali consecutivi,
+  piu un giorno di margine UTC: massimo 14 giorni API e sette variabili,
+  per mantenere il costo unitario di ogni richiesta;
+  timeout HTTP 60 secondi, connessione 10, nessun redirect.
+  Tutte le risposte analizzate e report scritto prima dei DELETE/INSERT.
+  Unita errate, ore mancanti/duplicate/disordinate UTC, numerici mancanti,
+  non finiti o non memorizzabili bloccano senza sostituzione con zero.
+  HTTP/rate limit/date indisponibili sono errori espliciti, nessun fallback.
+  Report salvato anche per ricostruire operazioni parziali.
+- Salvataggio AutoCommit, un giorno alla volta: errore puo lasciare
+  una giornata parziale, ma non cancella anticipatamente i giorni seguenti.
+  Richiede Sovrascrivi per recuperare un giorno parziale; il retry normale
+  lo salterebbe. Blocco target condiviso 03-10, non con 02/legacy esterno.
+  03-08 non invalidano meteo e 09 non ricalcola piste/SID/quote/validazioni.
+  10 integrato usa quota ARP, non le quote delle centraline legacy.
+  09 invalida lo storico 10 per ciascun giorno modificato, ma non azzera
+  A_m/stato 3 gia prodotti: rieseguire 10 con Sovrascrivi.
+- Provenienza: migrazione PostgreSQL 4, tabella weather_days con target,
+  giorno, esecuzione 09, ARP/quota e SHA256 delle righe ordinate
+  data_ora/temperatura_C/pressione_hpa realmente salvate. Efficace soltanto
+  con esecuzione 09 completata; assente dopo cancellazione dell'esecuzione.
+  10 rifiuta meteo privo di provenienza, anche vecchie importazioni Open-Meteo:
+  reimportare con 09/Sovrascrivi. Nessuna nuova tabella nel database radar.
+- Budget API persistente: weather_api_calls (migrazione 4), prenotazione
+  atomica globale prima di ogni tentativo, stati reserved/succeeded/failed.
+  Include timeout, errori e worker interrotti; nessun rimborso, nessun
+  consumo per giorni saltati. Conserva il conteggio anche eliminando le
+  esecuzioni. Blocco PostgreSQL breve dedicato alle prenotazioni, distinto
+  dal blocco target della pipeline.
+  [Limiti gratuiti pubblicati](https://open-meteo.com/en/pricing):
+  600/minuto, 5000/ora, 10000/giorno, 300000/mese. Intervalli oltre due
+  settimane o oltre dieci variabili possono valere piu chiamate; i blocchi
+  limitati qui evitano tale maggiorazione. Un anno continuo: 29 richieste.
+  Preflight sul totale pianificato e ricontrollo per ogni prenotazione.
+  Contatori/residui in log, riepilogo e JSON, finestre mobili prudenziali
+  1 minuto/1 ora/24 ore/31 giorni. Stima della sola installazione, non quota
+  ufficiale IP: esclusi altri client, altre installazioni e consumi precedenti.
+  HTTP 429 comunque propagato, nessun retry/fallback nascosto.
+- Progressione: analisi 0-50%, salvataggio DELETE/INSERT 50-99%, riepilogo
+  99%, concluso 100% dopo disconnect, come le altre fasi.
+- Test: unitari su conversioni/HTTP/errori/DST; integrazione su MyISAM e
+  PostgreSQL temporanei per date, giorni parziali, overwrite, protezione
+  dei dati prima del salvataggio, blocco fra fasi, report scaricabile,
+  errori dopo INSERT, recupero, anno bisestile, chunk/form.
+  TEST_OPEN_METEO=1 abilita anche una vera chiamata API con salvataggio
+  esclusivamente nel DB temporaneo, poi rimosso; normalmente le risposte
+  sono sintetiche. Nessuna scrittura operativa e nessun deploy.
+- Licenza: [Open-Meteo, CC BY 4.0](https://open-meteo.com/en/licence),
+  attribuzione in log/report. Accesso pubblico gratuito soggetto ai limiti
+  e all'uso non commerciale del servizio; endpoint/piano cliente per uso
+  commerciale non implementati.
+
+## Gruppo 10-correggi_quote*
+
+- Varianti: 1.0 e 1.0+lipo; differenza funzionale trovata nell'aggiunta
+  dei metadati della centralina LIPO (quota 120 m). Nessuna modifica legacy.
+- Input legacy: host, database, aeroporto, utente/password; scelta della
+  centralina per LIMC. DBI/MySQL, nessun processo esterno. Log Windows
+  in append; durata/memoria non misurate.
+- Selezione verificata: flay validation_bt=2, senza filtro A/D o pista;
+  meteo in intervallo futuro da data_ora_arr a +60 minuti (+30 per CGP),
+  prima riga senza ORDER BY. Battute con validation diversa da N/A,
+  escluso SQL NULL, Z_m non NULL e A_m NULL. Include S.
+- Formula caratterizzata dal codice originale:
+  `P_aereo = 1013.25 * (1 - Z_m * 0.0065 / 288.15)^5.2525`;
+  `A_m = quota_sorgente + ((temperatura_C+273.15)/0.0065) *
+  (1 - (P_aereo/pressione_hpa)^(1/5.2525))`.
+  Quote centralina legacy: CGP 216.5, Lonate 205, Ferno 215, Juvara 122,
+  Trezzo 187, LIPO 120 m. Risultati negativi non troncati.
+  Scrive A_m e poi validation_bt=3; AutoCommit senza rollback.
+- Adattamenti richiesti/approvati: pressione surface_pressure e temperatura
+  da 09 alla quota ARP, non alle quote centralina. Stesso esponente 5.2525.
+  Ora contenente data_ora_arr (14:37 -> 14:00), non lookup futuro.
+  Meteo assente, ambiguo o non verificabile: warning e skip traccia,
+  senza avanzamento a bt=3. Nessun recupero automatico via API.
+- Migrazione: `ScriptManager::Command::CorreggiQuote`, codice
+  correggi_quote, asincrono/esclusivo, timeout 3600 secondi.
+  Database e aeroporto LIMC/LIML/LIME/LIPO; intervallo facoltativo su
+  data_ora_arr, skip giornaliero e overwrite comuni. Nessun filtro
+  aeroporto sulle tracce: database coerente con il contesto scelto.
+  Provenienza 09 completata obbligatoria; verifica aeroporto, coordinate,
+  quota ARP e impronta pressione/temperatura. Modifiche successive o righe
+  duplicate rendono il giorno non verificabile. Nessun uso cieco di meteo
+  di centralina come pressione ARP; reimportare con 09/Sovrascrivi.
+- Salvataggio: analisi completa prima degli UPDATE; tutti gli A_m delle
+  battute eleggibili vengono ricalcolati da Z_m, anche valori parziali
+  preesistenti su bt=2, per recuperare retry senza dati obsoleti.
+  Overwrite include bt=2/3 e azzera A_m solo delle tracce utilizzabili,
+  mai di quelle saltate. bt=3 solo dopo le scritture della traccia.
+  Nessuna modifica H_m/Z_m/hmod, pista, SID o validation delle battute.
+  Numerici non finiti, pressione <=0, temperatura <=-273.15 o quota fuori
+  dominio ISA producono errori espliciti prima del salvataggio.
+- Completamento con avvisi: giorni con almeno una traccia saltata non
+  registrati nello storico, per consentire retry delle sole bt=2 rimaste.
+  Progresso analisi 0-50%, salvataggio 50-99%, riepilogo 99%, concluso
+  100% dopo disconnect. Blocco target condiviso 03-10.
+- Dipendenze: 03-06 e 08 invalidano storico 10 sulle date data_ora_arr
+  interessate; 03/04 includono anche le date delle battute per cambi giorno.
+  I loro overwrite cancellano A_m obsolete. 05/06 accettano bt=3 e
+  ripristinano 1; 08 accetta bt=3 e ricalcola fino a 2. 07 indipendente.
+  09 invalida solo storico/provenienza; per bt=3 esistenti usare
+  esplicitamente 10/Sovrascrivi dopo il nuovo meteo.
+- Verifiche: t/unit/correggi_quote.t estrae la formula originale e confronta
+  risultati, esponente, quote sorgente, negativi e dominio.
+  t/integration/carica_meteo.t verifica su database temporanei ora contenente,
+  ARP, filtri A/D e battute, date, skip/overwrite/retry, mancata provenienza,
+  meteo modificato, metadati incoerenti, errori, annullamento, blocco e form.
+  Verifica inoltre quote API alle soglie esatte 600/5000/10000/300000.
+  t/integration/validation_window.t verifica reset upstream anche da bt=3.
+  Nessuna scrittura operativa, nuova dipendenza o deploy.
+
+## Controlli temporali comuni dei comandi migrati 03-08 e 10
 
 - `date_from` e `date_to` facoltativi ma entrambi richiesti se uno e presente,
   giorni inclusi; senza intervallo si considera l'intero database.
-  03-06 usano `flay.data_ora_italy` DATETIME, non la data UTC.
-  07 usa `data_ora_arr`, come il legacy, per scelta esplicita dell'utente.
+  03-06 e 08 usano `flay.data_ora_italy` DATETIME, non la data UTC.
+  07 e 10 usano `data_ora_arr`, come il legacy, per scelta esplicita dell'utente.
   Tracce senza il rispettivo campo data escluse con conteggio nei log;
   `M` preservate. Si elaborano sempre
   tutte le battute delle tracce selezionate, anche oltre mezzanotte.
 - Storico persistente PostgreSQL `validation_days`, separato per target
   MySQL e comando. Skip soltanto per giorni di esecuzioni completate con
   successo; nessuna deduzione dai soli flag esistenti o da vecchie esecuzioni
-  senza storico giornaliero. Blocco fra i cinque comandi sullo stesso target;
+  senza storico giornaliero. Blocco condiviso 03-10 sullo stesso target;
   non coordina 02 o processi esterni.
 - `overwrite` disabilitato per default: ricalcola il comando e azzera i
   risultati dipendenti, invalidando prima il relativo storico giornaliero.
@@ -374,11 +629,16 @@ procedure eseguibili dell'applicazione.
   arrivi; 06 azzera pista/SID decolli e ricalcola pista. Non ripristina
   coordinate/quote eventualmente alterate da script successivi.
   07 ricalcola solo SID dei decolli con pista e bt>0.
+  08 ricalcola Z_m/hmod da H_m con pista e bt=1/2/3, conservando pista/SID.
+  Gli overwrite 03-06 azzerano Z_m/hmod/A_m nei propri scope; 05/06 includono
+  anche bt=2/3 e lo ripristinano a 1. 08 azzera anche A_m; H_m non alterato.
+  10 ricalcola A_m con bt=2/3, senza modificare Z_m/H_m.
 - Dipendenza 07: 03/04/06 invalidano lo storico SID sulle date data_ora_arr
   dei decolli interessati, non riutilizzando le diverse date locali.
   Per 03/04 vengono inclusi anche i giorni delle battute, per invalidare
   preventivamente l'eventuale nuovo giorno calcolato da 04. 05 resta
   indipendente da 07. Invalida solo lo storico, non i dati di altri giorni.
+  03-06 invalidano anche lo storico 08 nei giorni locali selezionati.
 - Per gli scarti pista P/bt0/N*, lo stato di 04 viene ricostruito dalle
   battute Y (+X per 05): 4-7 -> L, almeno 8 -> Y. Stati incoerenti con meno
   di quattro battute bloccano prima di scrivere. Analisi su dati proiettati

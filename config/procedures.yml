@@ -147,6 +147,66 @@ procedures:
             LIML: Milano Linate (pista principale)
             LIME: Bergamo Orio al Serio
           x-order: 2
+  - code: rettifica_quote
+    name: 08-rettifica_quote_nulle
+    description: >-
+      Rettifica le quote zero di arrivi e decolli con validation_bt=1 e pista assegnata.
+      Scrive Z_m e hmod senza alterare H_m; copia anche le quote originali non nulle.
+      Date facoltative su data_ora_italy; salta i giorni gia completati salvo Sovrascrivi.
+      AutoCommit: errori e annullamenti non annullano le scritture gia eseguite.
+    enabled: true
+    handler_class: ScriptManager::Command::RettificaQuote
+    execution_mode: async
+    timeout_seconds: 3600
+    exclusive: true
+    retention_days: 7
+    parameter_schema:
+      type: object
+      required: [database]
+      properties:
+        database: *runway_database
+  - code: carica_meteo
+    name: 09-carica_dati_meteo
+    description: >-
+      Recupera dati storici orari Open-Meteo alle coordinate e quota ARP dell'aeroporto.
+      Scrive meteo in ora italiana: dati modellistici, non misure di centralina.
+      Date obbligatorie. Salta giorni con dati esistenti; Sovrascrivi sostituisce
+      interi giorni, anche misure di centraline. Ora ripetuta: conserva la seconda.
+      Report scaricabile con sorgente e dati UTC originali. AutoCommit senza rollback.
+      La fase 10 integrata usa la provenienza e la quota ARP salvate da questo comando.
+      Chiamate API e budget residuo locale sono tracciati in log, riepilogo e report.
+      Dopo una sostituzione del meteo, ricalcolare 10 con Sovrascrivi.
+    enabled: true
+    handler_class: ScriptManager::Command::CaricaMeteo
+    execution_mode: async
+    timeout_seconds: 3600
+    exclusive: true
+    retention_days: 7
+    parameter_schema:
+      type: object
+      required: [database, airport]
+      properties:
+        database: *runway_database
+        airport: *runway_airport
+  - code: correggi_quote
+    name: 10-correggi_quote
+    description: >-
+      Normalizza Z_m in A_m con pressione e temperatura orarie Open-Meteo alla quota ARP.
+      Usa l'ora contenente data_ora_arr e solo giornate importate da 09 con provenienza verificata.
+      Salta con avviso le tracce senza meteo valido. Nessuna chiamata API.
+      Date facoltative; Sovrascrivi ricalcola anche lo stato 3. AutoCommit senza rollback.
+    enabled: true
+    handler_class: ScriptManager::Command::CorreggiQuote
+    execution_mode: async
+    timeout_seconds: 3600
+    exclusive: true
+    retention_days: 7
+    parameter_schema:
+      type: object
+      required: [database, airport]
+      properties:
+        database: *runway_database
+        airport: *runway_airport
   - code: example_echo
     name: Esempio - eco con file di output
     description: >-

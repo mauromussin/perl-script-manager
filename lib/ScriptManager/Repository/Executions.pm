@@ -47,7 +47,7 @@ sub lock_validation_target ($self, $target) {
     my $tx = $db->begin;
     my $locked = $db->query('select pg_try_advisory_xact_lock(hashtextextended(?, 0)) as locked',
         "validation:$target")->hash->{locked};
-    ScriptManager::Exception->throw('validation_busy', 'Un altro comando 03-07 sta operando sullo stesso database')
+    ScriptManager::Exception->throw('validation_busy', 'Un altro comando 03-10 sta operando sullo stesso database')
         unless $locked;
     return {db => $db, tx => $tx};
 }
@@ -76,6 +76,56 @@ sub complete_validation_days ($self, $target, $code, $days, $execution_id) {
             $target, $code, $day, $execution_id);
     }
     $tx->commit;
+}
+
+sub weather_usage ($self, $execution_id, $db = undef) {
+    $db //= $self->pg->db;
+    return $db->query(q{
+        select count(*) filter (where reserved_at > clock_timestamp() - interval '1 minute') as minute,
+          count(*) filter (where reserved_at > clock_timestamp() - interval '1 hour') as hour,
+          count(*) filter (where reserved_at > clock_timestamp() - interval '24 hours') as day,
+          count(*) as month, count(*) filter (where execution_id = ?) as execution_requests,
+          clock_timestamp()::text as checked_at
+        from weather_api_calls where reserved_at > clock_timestamp() - interval '31 days'
+    }, $execution_id)->hash;
+}
+
+sub reserve_weather_call ($self, $execution_id, $limits) {
+    my $db = $self->pg->db;
+    my $tx = $db->begin;
+    $db->query('select pg_advisory_xact_lock(hashtextextended(?, 0))', 'open-meteo:public-budget');
+    my $usage = $self->weather_usage($execution_id, $db);
+    for my $window (qw(minute hour day month)) {
+        ScriptManager::Exception->throw('weather_quota', "Budget Open-Meteo locale esaurito: $window ($limits->{$window})")
+            if $usage->{$window} >= $limits->{$window};
+    }
+    my $id = $db->query('insert into weather_api_calls (execution_id) values (?) returning id', $execution_id)->hash->{id};
+    $tx->commit;
+    return $id;
+}
+
+sub finish_weather_call ($self, $id, $success) {
+    $self->pg->db->query('update weather_api_calls set status = ? where id = ?', $success ? 'succeeded' : 'failed', $id);
+}
+
+sub invalidate_weather_day ($self, $target, $day) {
+    $self->pg->db->query('delete from weather_days where target = ? and day = ?', $target, $day);
+    $self->invalidate_validation_days($target, ['correggi_quote'], [$day]);
+}
+
+sub record_weather_day ($self, $target, $day, $location, $fingerprint, $execution_id) {
+    $self->pg->db->query(q{
+        insert into weather_days (target, day, location, fingerprint, execution_id) values (?, ?, ?, ?, ?)
+        on conflict (target, day) do update set location = excluded.location,
+          fingerprint = excluded.fingerprint, execution_id = excluded.execution_id
+    }, $target, $day, {json => $location}, $fingerprint, $execution_id);
+}
+
+sub weather_day ($self, $target, $day) {
+    return $self->pg->db->query(q{
+        select w.location, w.fingerprint from weather_days w join executions e on e.id = w.execution_id
+        where w.target = ? and w.day = ? and e.status = 'completed'
+    }, $target, $day)->expand->hash;
 }
 
 sub create_execution ($self, %args) {
