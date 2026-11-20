@@ -14,6 +14,7 @@ Uso:
   procedure run <codice> [--parametro valore ...] [--wait]
   procedure status <id-esecuzione>
   procedure cancel <id-esecuzione>
+  procedure reconcile
 USAGE
 }
 
@@ -24,6 +25,12 @@ my $app     = ScriptManager->new;
 my $service = $app->execution_service;
 my $repo    = $app->repo;
 my $user    = $ENV{USER} // $ENV{USERNAME} // 'cli';
+
+if ($command eq 'reconcile') {
+    die usage() if @args;
+    printf "Esecuzioni interrotte dichiarate fallite: %d\n", $service->reconcile_interrupted(1);
+    exit 0;
+}
 
 if ($command eq 'list') {
     printf "%-24s %-6s %s\n", @{$_}{qw(code execution_mode name)} for @{$app->registry->enabled};
@@ -48,6 +55,7 @@ if ($command eq 'run') {
 
     my $exec;
     while (1) {
+        $service->reconcile_interrupted;
         $exec = $repo->get_execution($id);
         last if $FINAL{$exec->{status}};
         sleep 1;
@@ -58,6 +66,7 @@ if ($command eq 'run') {
 
 if ($command eq 'status') {
     my $id   = shift @args // die usage();
+    $service->reconcile_interrupted;
     my $exec = $repo->get_execution($id) // do { warn "Esecuzione non trovata\n"; exit 2 };
     printf "%s\n", join ' ', map { $_ // '-' } @{$exec}{qw(procedure_code status progress current_step)};
     printf "  [%s] %s\n", @{$_}{qw(level message)} for @{$repo->list_events($exec->{id})};

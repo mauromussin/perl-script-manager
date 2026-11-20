@@ -156,6 +156,43 @@ sub get_execution ($self, $id) {
     return $exec;
 }
 
+sub lock_execution ($self, $id) {
+    my $db = $self->pg->db;
+    my $tx = $db->begin;
+    return undef unless $db->query(
+        'select pg_try_advisory_xact_lock(hashtextextended(?, 0)) as locked',
+        "execution:$id")->hash->{locked};
+    return {db => $db, tx => $tx};
+}
+
+sub running_jobs ($self) {
+    return $self->pg->db->query(q{
+        select id, minion_job_id from executions
+        where status in ('running', 'cancel_requested') and minion_job_id is not null
+    })->hashes->to_array;
+}
+
+sub mark_interrupted ($self, $id, $job_id, $job_state) {
+    my $message = 'Worker interrotto: job Minion non piu attivo; possibili scritture parziali. '
+        . 'Verificare i dati prima di rieseguire; nessun retry automatico.';
+    my $db = $self->pg->db;
+    my $tx = $db->begin;
+    my $changed = $db->query(q{
+        update executions set status = 'failed', finished_at = now(), exit_code = 1,
+          error_code = 'worker_interrupted', error_message = ?, current_step = ?
+        where id = ? and minion_job_id = ? and status in ('running', 'cancel_requested')
+    }, $message, 'Esecuzione interrotta: job Minion non piu attivo', $id, $job_id)->rows;
+    if ($changed) {
+        $db->query(q{
+            insert into execution_events (execution_id, level, event_type, message, metadata)
+            values (?, 'error', 'state', ?, ?)
+        }, $id, $message, {json => {operation => 'execution_reconciliation',
+            minion_job_id => $job_id, minion_state => $job_state}});
+    }
+    $tx->commit;
+    return $changed;
+}
+
 sub claim_database_queue ($self, $exec) {
     my $db = $self->pg->db;
     my $tx = $db->begin;

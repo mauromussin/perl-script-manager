@@ -78,6 +78,11 @@ sub startup ($self) {
     $self->helper(current_user => sub ($c) { 'anonymous' });
     $self->helper(is_final     => sub ($c, $status) { scalar grep { $_ eq $status } qw(completed failed cancelled timed_out) });
 
+    $self->hook(before_dispatch => sub ($c) {
+        $service->reconcile_interrupted
+            if $c->req->url->path->to_string =~ m{\A/(?:api/)?executions(?:/|\z)};
+    });
+
     $self->hook(after_dispatch => sub ($c) {
         my $h = $c->res->headers;
         $h->header('X-Content-Type-Options' => 'nosniff');

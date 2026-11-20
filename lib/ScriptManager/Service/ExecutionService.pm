@@ -10,6 +10,7 @@ use ScriptManager::Service::Context;
 has [qw(repo registry minion output_root process_runner)];
 has retention_days => 30;
 has debug_operations => 0;
+has next_reconciliation => 0;
 has logger         => sub { Log::Any->get_logger(category => 'ScriptManager::Execution') };
 
 # Validates the input and creates an execution. Returns {id => ...} or {errors => [...]}.
@@ -77,6 +78,7 @@ sub execute ($self, $id, $params = undef) {
             return 'failed';
         }
     }
+    my $execution_guard = $self->repo->lock_execution($id) or return;
     return unless $self->repo->mark_running($id);
 
     my $ctx = ScriptManager::Service::Context->new(
@@ -159,7 +161,29 @@ sub cancel ($self, $id) {
     return $status;
 }
 
+sub reconcile_interrupted ($self, $force = 0) {
+    my $now = clock_gettime(CLOCK_MONOTONIC);
+    return 0 if !$force && $now < $self->next_reconciliation;
+    $self->minion->repair;
+    my $count = 0;
+    for my $exec (@{$self->repo->running_jobs}) {
+        my $guard = $self->repo->lock_execution($exec->{id}) or next;
+        my $job = $self->minion->backend->list_jobs(0, 1, {ids => [$exec->{minion_job_id}]})->{jobs}[0];
+        next if $job && $job->{state} eq 'active';
+        my $state = $job ? $job->{state} : 'missing';
+        my $changed = $self->repo->mark_interrupted($exec->{id}, $exec->{minion_job_id}, $state);
+        $self->logger->error("[exec=$exec->{id}] Worker interrotto; job Minion $state, possibili scritture parziali")
+            if $changed;
+        $count += $changed;
+    }
+    $self->next_reconciliation(clock_gettime(CLOCK_MONOTONIC) + 30);
+    return $count;
+}
+
 sub register_tasks ($self) {
+    $self->minion->on(worker => sub ($minion, $worker) {
+        $worker->on($_ => sub { $self->reconcile_interrupted }) for qw(wait busy);
+    });
     $self->minion->add_task(
         run_procedure => sub ($job, $id) {
             my $exec = $self->repo->get_execution($id) or return $job->fail('Esecuzione non trovata');
