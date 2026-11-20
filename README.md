@@ -200,7 +200,7 @@ e rilasciato, la successiva richiesta sulla stessa coda marca l'esecuzione
 gestita rimasta attiva come `failed/worker_interrupted`, con avviso di
 possibili scritture parziali: non la ripete automaticamente.
 
-Per **04** il timeout resta quello configurato (3600 secondi nel catalogo).
+Per **04** il timeout predefinito resta quello configurato (3600 secondi nel catalogo).
 Quando arriva il suo turno, prima di qualsiasi reset/scrittura radar:
 
 - conta le battute delle tracce effettivamente selezionate, considerando
@@ -213,19 +213,43 @@ Quando arriva il suo turno, prima di qualsiasi reset/scrittura radar:
 - sceglie i tempi piu prudenziali e applica un margine 2x; dopo l'analisi
   completa ricontrolla il budget col numero esatto di operazioni previste.
 
-Se la stima supera il timeout, fallisce con `timeout_estimate`, indicando
-di ridurre l'intervallo. Se manca uno storico misurabile, fallisce con
+La stima e deliberatamente prudenziale (campioni piu lenti e margine 2x):
+puo quindi superare 3600 secondi anche se un'elaborazione simile e terminata
+prima. Non e un tempo reale atteso ne una garanzia.
+
+Se la stima supera il timeout, la richiesta si ferma prima delle scritture
+con `timeout_estimate`. Nel dettaglio compare **Conferma e riesegui senza
+timeout**, con checkbox di conferma non preselezionata e avviso dei rischi.
+La conferma crea una **nuova richiesta** con gli stessi parametri (database,
+date e Sovrascrivi), in fondo alla stessa coda. Non mantiene un worker
+occupato in attesa dell'utente e non modifica il record rifiutato.
+
+Solo per la richiesta confermata vengono disattivati **sia il blocco della
+stima sia il timeout reale**: puo durare piu di 3600 secondi. Il preflight
+continua a calcolare/registrare le stime, anche prima del salvataggio,
+ma non rifiuta il superamento. Restano lock, coda, controlli degli input e
+cancellazione cooperativa; un SQL gia in corso puo ritardare la cancellazione.
+Il dettaglio mostra sempre **Timeout disattivato**. La scelta e persistente
+(`executions.timeout_bypassed`, migrazione PostgreSQL **6**) e il log registra
+chi ha richiesto la nuova esecuzione e il riferimento alla richiesta originale.
+L'API di stato espone `timeout_bypassed` e `timeout_bypass_available`.
+Un normale **Riesegui** non eredita il bypass; nessuna modifica al timeout
+del catalogo o alle altre procedure.
+
+Se manca uno storico misurabile, fallisce con
 `timeout_estimate_unavailable`: **anche un nuovo database senza storico
 viene bloccato**, come richiesto, senza coefficienti inventati o bypass.
 Serve una calibrazione verificata/storico operativo disponibile; non e
-previsto in questa modifica un comando di calibrazione o un override.
+previsto un comando di calibrazione. La conferma per durata eccessiva non
+aggira l'assenza dello storico.
 Uno skip integrale di giorni gia completati non richiede una stima.
 
 Il preflight legge soltanto il database radar; log e misure sono salvati in
 PostgreSQL. La stima viene registrata nei log, non e una garanzia: carico,
-I/O e complessita delle tracce possono variare, e il timeout reale resta
-attivo, includendo il preflight. Una stima favorevole non rende atomiche le
-scritture MyISAM. Gli altri comandi hanno la coda, non questo estimatore.
+I/O e complessita delle tracce possono variare. Senza conferma esplicita il
+timeout reale resta attivo, includendo il preflight. Ne una stima favorevole
+ne il bypass rendono atomiche le scritture MyISAM. Gli altri comandi hanno
+la coda, non questo estimatore.
 
 La migrazione PostgreSQL **5** aggiunge target e ordine persistenti alle
 esecuzioni, senza modifiche allo schema radar. Aggiornare app e worker
@@ -234,6 +258,8 @@ di target persistente non sono retroattivamente gestite dalla nuova coda:
 verificare quelle pendenti/interrotte e ricrearle dopo l'aggiornamento.
 Le misure legacy prive di target assumono invariato l'host MySQL configurato:
 se e cambiato, non usarle come calibrazione.
+La migrazione 6 mantiene il timeout attivo per tutte le richieste esistenti;
+la conferma e disponibile anche per vecchie 04 rifiutate con timeout_estimate.
 
 ### Esecuzioni rimaste running dopo la morte del worker
 

@@ -1,5 +1,6 @@
 package ScriptManager::Controller::Api;
 use Mojo::Base 'Mojolicious::Controller', -signatures;
+use Mojo::JSON qw(true false);
 
 sub procedures ($c) {
     my @list = map { +{%{$_}{qw(code name description execution_mode timeout_seconds parameter_schema)}} }
@@ -25,6 +26,8 @@ sub status ($c) {
         started_at finished_at exit_code summary error_code error_message
         queue_target queue_position
     );
+    $out{timeout_bypassed} = $exec->{timeout_bypassed} ? true : false;
+    $out{timeout_bypass_available} = $c->execution_service->can_bypass_timeout($exec) ? true : false;
     $out{events} = [map { +{%{$_}{qw(level event_type message created_at)}} } @{$c->repo->list_events($exec->{id})}];
     $out{artifacts} = [
         map { +{%{$_}{qw(id original_name media_type size_bytes sha256 created_at expires_at)}} }

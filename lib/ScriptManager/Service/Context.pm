@@ -12,6 +12,7 @@ has [qw(execution_id repo output_root logger retention_days)];
 has 'validation_guard';
 has debug_operations => 0;
 has timeout_seconds => 3600;
+has timeout_bypassed => 0;
 has started_monotonic => sub { clock_gettime(CLOCK_MONOTONIC) };
 has types => sub { Mojolicious::Types->new };
 

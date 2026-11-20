@@ -116,4 +116,44 @@ subtest 'controlled artifact download' => sub {
     $secret->remove;
 };
 
+subtest '04: conferma esplicita e CSRF prima della riesecuzione senza timeout' => sub {
+    local $ENV{MYSQL_HOST} = 'mysql.test';
+    local $ENV{MYSQL_PORT} = 3306;
+    my $service = $t->app->execution_service;
+    my $repo = $t->app->repo;
+    my $source = $service->submit(valida_battute => {database => 'timeout_web',
+        date_from => '2026-09-01', date_to => '2026-09-30', overwrite => Mojo::JSON::true})->{id};
+    $repo->mark_finished($source, status => 'failed', exit_code => 1, error_code => 'timeout_estimate',
+        error_message => 'Stima 4395 secondi oltre il timeout');
+    my $endpoint = "/executions/$source/retry-without-timeout";
+    $t->get_ok("/executions/$source")->status_is(200)
+        ->element_exists('input[name=confirm_timeout_bypass][required]')
+        ->element_exists_not('input[name=confirm_timeout_bypass][checked]')
+        ->content_like(qr/Conferma e riesegui senza timeout/);
+    my $token = csrf();
+    $t->post_ok($endpoint => form => {confirm_timeout_bypass => 1})->status_is(403);
+    $t->post_ok($endpoint => form => {csrf_token => $token})->status_is(422);
+    $t->get_ok("/api/executions/$source")->status_is(200)
+        ->json_is('/timeout_bypass_available' => Mojo::JSON::true)
+        ->json_is('/timeout_bypassed' => Mojo::JSON::false);
+    $t->post_ok($endpoint => form => {csrf_token => $token, confirm_timeout_bypass => 1})->status_is(302);
+    my $page = $t->tx->res->headers->location;
+    my ($retry) = $page =~ m{/executions/([0-9a-f-]+)};
+    isnt $retry, $source;
+    $t->get_ok($page)->status_is(200)->content_like(qr/Timeout disattivato per questa esecuzione/)
+        ->element_exists_not('input[name=confirm_timeout_bypass]');
+    is_deeply $repo->get_execution($retry)->{parameters}, $repo->get_execution($source)->{parameters},
+        'intervallo e Sovrascrivi preservati';
+    is $repo->get_execution($source)->{status}, 'failed', 'richiesta originale conservata nello storico';
+    $t->get_ok("/api/executions/$retry")->status_is(200)
+        ->json_is('/timeout_bypassed' => Mojo::JSON::true)
+        ->json_is('/timeout_bypass_available' => Mojo::JSON::false);
+    $t->get_ok("/procedures/valida_battute?from=$retry")->status_is(200)
+        ->element_exists_not('input[name=timeout_bypassed]');
+    $t->post_ok("/executions/$retry/retry-without-timeout" => form =>
+        {csrf_token => csrf(), confirm_timeout_bypass => 1})->status_is(409, 'nessun bypass per job queued o gia confermati');
+    $repo->mark_finished($source, status => 'failed', error_code => 'timeout_estimate_unavailable');
+    $t->get_ok("/executions/$source")->status_is(200)->element_exists_not('input[name=confirm_timeout_bypass]');
+};
+
 done_testing;

@@ -17,6 +17,14 @@ has logger         => sub { Log::Any->get_logger(category => 'ScriptManager::Exe
 sub submit ($self, $code, $input, %o) {
     my $proc = $self->registry->get($code)
         // ScriptManager::Exception->throw('unknown_procedure', 'Procedura non disponibile');
+    my $source;
+    if (defined $o{timeout_bypass_from}) {
+        $source = $self->repo->get_execution($o{timeout_bypass_from});
+        ScriptManager::Exception->throw('timeout_bypass_not_allowed',
+            'Il bypass richiede una 04 bloccata dalla stima oltre il timeout')
+            unless $code eq 'valida_battute' && $self->can_bypass_timeout($source);
+        $input = $source->{parameters};
+    }
     my $validator = $self->registry->validator($proc);
     my ($params, $errors) = $validator->validate($input);
     return {errors => $errors} if @$errors;
@@ -35,8 +43,14 @@ sub submit ($self, $code, $input, %o) {
         requested_by   => $o{requested_by} // 'anonymous',
         parameters     => $validator->redact($params),
         queue_target   => $target,
+        timeout_bypassed => $source ? 1 : 0,
     );
     $self->repo->add_event($id, 'info', 'Esecuzione registrata', event_type => 'state');
+    $self->repo->add_event($id, 'warning',
+        'Conferma utente: controllo della stima e timeout reale disattivati per questa esecuzione; '
+        . 'possibili scritture parziali in caso di interruzione',
+        event_type => 'state', metadata => {operation => 'timeout_bypass', source_execution_id => $source->{id}})
+        if $source;
 
     if ($proc->{execution_mode} eq 'async') {
         my $job_id = eval { $self->minion->enqueue(run_procedure => [$id], {attempts => 1}) };
@@ -55,6 +69,13 @@ sub submit ($self, $code, $input, %o) {
         $self->execute($id, $params);
     }
     return {id => $id};
+}
+
+sub can_bypass_timeout ($self, $exec) {
+    my $proc = $self->registry->get('valida_battute');
+    return $exec && $proc && $proc->{queue_by_database}
+        && $exec->{procedure_code} eq 'valida_battute' && $exec->{status} eq 'failed'
+        && ($exec->{error_code} // '') eq 'timeout_estimate' && !$exec->{timeout_bypassed} ? 1 : 0;
 }
 
 sub execute ($self, $id, $params = undef) {
@@ -81,6 +102,7 @@ sub execute ($self, $id, $params = undef) {
     my $execution_guard = $self->repo->lock_execution($id) or return;
     return unless $self->repo->mark_running($id);
 
+    my $bypassed = $exec->{procedure_code} eq 'valida_battute' && $exec->{timeout_bypassed};
     my $ctx = ScriptManager::Service::Context->new(
         execution_id   => $id,
         repo           => $self->repo,
@@ -89,6 +111,7 @@ sub execute ($self, $id, $params = undef) {
         debug_operations => $self->debug_operations,
         retention_days => $proc ? ($proc->{retention_days} // $self->retention_days) : $self->retention_days,
         timeout_seconds => $proc ? $proc->{timeout_seconds} : 3600,
+        timeout_bypassed => $bypassed ? 1 : 0,
         started_monotonic => clock_gettime(CLOCK_MONOTONIC),
     );
     $ctx->log(info => 'Esecuzione avviata', event_type => 'state');
@@ -103,8 +126,9 @@ sub execute ($self, $id, $params = undef) {
             local $SIG{ALRM} = sub {
                 die ScriptManager::Exception->new(code => 'timed_out', message => "Timeout di $timeout secondi superato");
             };
-            alarm $timeout;
-            $ctx->log(info => "Preparazione comando $proc->{handler_class}; timeout $timeout secondi");
+            alarm($bypassed ? 0 : $timeout);
+            $ctx->log(info => "Preparazione comando $proc->{handler_class}; "
+                . ($bypassed ? 'timeout disattivato con conferma utente' : "timeout $timeout secondi"));
             my $handler = $proc->{handler_class}->new(logger => $self->logger, process_runner => $self->process_runner);
             $result = $handler->run($ctx, $params // $exec->{parameters});
             alarm 0;

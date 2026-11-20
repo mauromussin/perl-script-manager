@@ -34,10 +34,14 @@ sub ensure_budget ($self, $ctx, $analysis, $operations) {
     $ctx->log(info => sprintf(
         'Stima preventiva 04: %.1f secondi totali, timeout %d; margine 2x, non garanzia di durata',
         $estimate, $ctx->timeout_seconds), operation => 'duration_estimate',
-        estimated_seconds => $estimate, timeout_seconds => $ctx->timeout_seconds);
+        estimated_seconds => $estimate, timeout_seconds => $ctx->timeout_seconds,
+        timeout_bypassed => $ctx->timeout_bypassed ? 1 : 0);
     ScriptManager::Exception->throw('timeout_estimate', sprintf(
-        'Durata stimata 04 %.0f secondi superiore al timeout di %d secondi. Nessuna scrittura radar eseguita; ridurre l intervallo di date.',
-        $estimate, $ctx->timeout_seconds)) if $estimate > $ctx->timeout_seconds;
+        'Durata stimata 04 %.0f secondi superiore al timeout di %d secondi. Nessuna scrittura radar eseguita; '
+        . 'confermare la riesecuzione senza timeout nella pagina di dettaglio oppure ridurre l intervallo di date.',
+        $estimate, $ctx->timeout_seconds)) if $estimate > $ctx->timeout_seconds && !$ctx->timeout_bypassed;
+    $ctx->log(warning => 'Stima oltre il limite configurato: prosecuzione senza timeout con conferma utente')
+        if $estimate > $ctx->timeout_seconds && $ctx->timeout_bypassed;
     return $estimate;
 }
 

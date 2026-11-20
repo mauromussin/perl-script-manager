@@ -42,7 +42,8 @@ procedures:
       Scritture in AutoCommit: annullamenti ed errori non annullano gli aggiornamenti gia eseguiti.
       Date facoltative: senza intervallo considera tutto il database.
       Salta i giorni gia completati, salvo Sovrascrivi (azzera anche pista e SID).
-      Prima delle scritture stima la durata: rifiuta stime oltre il timeout o prive di storico misurabile.
+      Prima delle scritture stima la durata: oltre il timeout propone una riesecuzione senza limite
+      con conferma esplicita nel dettaglio; storico non misurabile resta bloccante.
     enabled: true
     handler_class: ScriptManager::Command::ValidaBattute
     queue_by_database: true

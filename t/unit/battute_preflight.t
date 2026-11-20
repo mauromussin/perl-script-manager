@@ -14,6 +14,7 @@ use ScriptManager::Service::BattutePreflight;
     use Mojo::Base -base, -signatures;
     has repo => sub { PreflightRepo->new };
     has timeout_seconds => 3600;
+    has timeout_bypassed => 0;
     has elapsed_seconds => 0;
     has execution_id => 'current';
     has logs => sub { [] };
@@ -59,6 +60,10 @@ subtest 'soglia esatta inclusiva e ricontrollo prima delle scritture' => sub {
     eval { $check->check_saving($ctx, 46) };
     ok(ScriptManager::Exception->caught($@, 'timeout_estimate'), '102 secondi rifiutati');
     like "$@", qr/ridurre l intervallo/;
+    $ctx->timeout_bypassed(1);
+    is $check->check_saving($ctx, 46), 102, 'conferma permette anche il ricontrollo oltre soglia';
+    ok scalar(grep { $_->[0] eq 'warning' && $_->[1] =~ /conferma utente/ } @{$ctx->logs}),
+        'bypass della stima segnalato esplicitamente';
 };
 
 subtest 'campiona operazioni e dimensioni differenti, nessuna scrittura radar' => sub {
@@ -81,11 +86,11 @@ subtest 'campiona operazioni e dimensioni differenti, nessuna scrittura radar' =
 };
 
 subtest 'assenza storico blocca; intero intervallo gia saltato non richiede stima' => sub {
-    my $ctx = PreflightContext->new(repo => PreflightRepo->new(events => []));
+    my $ctx = PreflightContext->new(repo => PreflightRepo->new(events => []), timeout_bypassed => 1);
     my $db = PreflightDB->new;
     my $check = ScriptManager::Service::BattutePreflight->new;
     eval { $check->check($db, $ctx, PreflightWindow->new, [], '', [], sub { die 'not called' }) };
-    ok(ScriptManager::Exception->caught($@, 'timeout_estimate_unavailable'));
+    ok(ScriptManager::Exception->caught($@, 'timeout_estimate_unavailable'), 'conferma non inventa uno storico mancante');
     is $db->reads, 0, 'non tenta di stimare o scrivere con valori inventati';
     $check->check($db, $ctx, PreflightWindow->new(days => []), [], '', [], sub { die 'not called' });
     is $db->reads, 0, 'skip non esegue lavoro o richiede calibrazione';

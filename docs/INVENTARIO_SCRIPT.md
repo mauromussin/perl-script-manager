@@ -208,17 +208,28 @@ procedure eseguibili dell'applicazione.
   database entro 90 giorni, anche progressi legacy/parziali con delta >=10
   operazioni. Tempi piu prudenziali, margine 2x e secondo controllo prima
   del salvataggio sul numero esatto di UPDATE pianificati.
-  Stima >timeout: errore timeout_estimate; storico insufficiente: errore
-  timeout_estimate_unavailable, senza scritture radar ne invalidazioni.
-  Nessun aumento automatico del timeout, nessun bypass per il primo avvio
-  su database senza storico; occorre una calibrazione verificata separata.
-  L'intervallo gia interamente saltato non richiede stima. Preflight incluso
-  nel timeout effettivo, non nell'attesa in coda; stima euristica, non garanzia.
+  Stima >timeout: errore timeout_estimate, senza scritture radar ne
+  invalidazioni; il dettaglio propone conferma esplicita per una nuova
+  richiesta senza timeout, con stessi parametri in fondo alla coda.
+  Checkbox non preselezionata, POST protetto CSRF e verifica server-side
+  della 04 rifiutata. Solo la richiesta confermata disattiva sia il blocco
+  della stima sia l'allarme di timeout reale; stime e avvisi ancora registrati.
+  Lock, cancellazione e controlli dati restano attivi. Scelta persistita in
+  executions.timeout_bypassed (migrazione PostgreSQL 6, default false) e
+  conferma con origine tracciata nei log. Un normale Riesegui non la eredita.
+  Storico insufficiente: errore timeout_estimate_unavailable, senza scritture
+  radar ne invalidazioni e senza conferma/bypass; occorre una calibrazione
+  verificata separata. Nessun aumento automatico del timeout.
+  L'intervallo gia interamente saltato non richiede stima. Quando attivo,
+  il timeout include il preflight, non l'attesa in coda; stima euristica, non garanzia.
   I nuovi salvataggi registrano misure strutturate anche in caso di
   interruzione, se sono state completate almeno dieci operazioni.
   Progressione resta 0 durante il preflight, poi segue lo schema esistente.
   Test: t/unit/battute_preflight.t e t/integration/validation_window.t,
-  con rifiuti prima di reset e storico invariato su MyISAM temporaneo.
+  con rifiuti prima di reset e storico invariato su MyISAM temporaneo;
+  t/integration/execution_service.t e t/integration/web.t verificano
+  conferma/CSRF, parametri immutati, coda, persistenza e superamento reale
+  del timeout configurato, senza perdere la cancellazione.
 
 ## Gruppo 05-trova_pista_atterraggi*
 

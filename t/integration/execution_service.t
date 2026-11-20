@@ -147,6 +147,7 @@ subtest 'logging migration upgrades existing events' => sub {
     my $before = $app->repo->list_events($id);
     $migrations->migrate;
     is_deeply $app->repo->list_events($id), $before, 'existing events preserved during upgrade';
+    ok !$app->repo->get_execution($id)->{timeout_bypassed}, 'migrazione mantiene il timeout delle vecchie richieste';
     $app->repo->add_event($id, 'critical', 'critical after upgrade');
     is $app->repo->list_events($id)->[-1]{level}, 'critical', 'upgraded schema accepts critical';
     $migrations->migrate(1);
@@ -375,6 +376,59 @@ subtest 'riconciliazione Minion: orfani, processi vivi, concorrenza e vecchie es
         };
         is $monitor->execute($queued), 'completed';
     }
+};
+
+subtest '04: conferma oltre stima disattiva il timeout reale solo per la nuova richiesta in coda' => sub {
+    local $ENV{MYSQL_HOST} = 'mysql.test';
+    local $ENV{MYSQL_PORT} = 3306;
+    my $app = TestHelper::mojo()->app;
+    my $svc = $app->execution_service;
+    my $repository = $app->repo;
+    my $input = {database => 'timeout_test', date_from => '2026-09-01', date_to => '2026-09-30',
+        overwrite => Mojo::JSON::true};
+    my $cancel_run = 0;
+    no warnings qw(redefine once);
+    local *ScriptManager::Command::ValidaBattute::run = sub {
+        my (undef, $ctx) = @_;
+        ScriptManager::Service::BattutePreflight->new(seconds_per_operation => 1)->check_saving($ctx, 2);
+        Time::HiRes::sleep(1.2);
+        $repository->request_cancel($ctx->execution_id) if $cancel_run;
+        $ctx->check_cancel;
+        return {success => 1, message => 'oltre il timeout configurato'};
+    };
+    my $source = $svc->submit(valida_battute => $input)->{id};
+    is $svc->execute($source), 'failed', 'richiesta normale rifiutata dalla stima';
+    is $repository->get_execution($source)->{error_code}, 'timeout_estimate';
+    ok $svc->can_bypass_timeout($repository->get_execution($source));
+    my $head = $svc->submit(valida_battute => $input)->{id};
+    my $retry = $svc->submit(valida_battute => {database => 'tampered'},
+        timeout_bypass_from => $source, requested_by => 'confirmed-user')->{id};
+    my $exec = $repository->get_execution($retry);
+    isnt $retry, $source, 'nuovo record, non modifica la richiesta rifiutata';
+    is_deeply $exec->{parameters}, $repository->get_execution($source)->{parameters},
+        'copia solo i parametri originali, non input modificati';
+    ok $exec->{timeout_bypassed}, 'scelta persistita fuori dai parametri del comando';
+    is $exec->{queue_position}, 2, 'nessun salto della coda';
+    is $svc->execute($retry), 'queued';
+    is $svc->cancel($head), 'cancelled';
+    my $started = Time::HiRes::time();
+    is $svc->execute($retry), 'completed';
+    cmp_ok Time::HiRes::time() - $started, '>=', 1, 'termina oltre il vero timeout di un secondo';
+    my ($audit) = grep { ($_->{metadata}{operation} // '') eq 'timeout_bypass' }
+        @{$repository->list_events($retry)};
+    is $audit->{metadata}{source_execution_id}, $source, 'conferma tracciata con origine';
+    is $repository->get_execution($retry)->{requested_by}, 'confirmed-user';
+    my $normal = $svc->submit(valida_battute => $exec->{parameters})->{id};
+    ok !$repository->get_execution($normal)->{timeout_bypassed}, 'un normale Riesegui non eredita il bypass';
+    is $svc->execute($normal), 'failed', 'il controllo della stima resta attivo nelle richieste ordinarie';
+    $cancel_run = 1;
+    my $cancelled = $svc->submit(valida_battute => {}, timeout_bypass_from => $source)->{id};
+    is $svc->execute($cancelled), 'cancelled', 'bypass non disattiva la cancellazione cooperativa';
+    eval { $svc->submit(test_async => {}, timeout_bypass_from => $source) };
+    ok(ScriptManager::Exception->caught($@, 'timeout_bypass_not_allowed'), 'bypass non esteso ad altre procedure');
+    $repository->mark_finished($source, status => 'failed', error_code => 'timeout_estimate_unavailable');
+    eval { $svc->submit(valida_battute => {}, timeout_bypass_from => $source) };
+    ok(ScriptManager::Exception->caught($@, 'timeout_bypass_not_allowed'), 'storico assente non aggirato');
 };
 
 subtest 'controlli automatici nel worker e nella consultazione web/API' => sub {

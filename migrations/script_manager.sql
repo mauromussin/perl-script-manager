@@ -121,3 +121,9 @@ create index executions_target_queue_idx on executions(queue_target, queue_order
 drop index if exists executions_target_queue_idx;
 alter table executions drop column queue_order;
 alter table executions drop column queue_target;
+
+-- 6 up
+alter table executions add column timeout_bypassed boolean not null default false;
+
+-- 6 down
+alter table executions drop column timeout_bypassed;

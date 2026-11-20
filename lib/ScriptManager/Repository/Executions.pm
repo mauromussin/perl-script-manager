@@ -134,9 +134,9 @@ sub create_execution ($self, %args) {
     $db->query('select pg_advisory_xact_lock(hashtextextended(?, 0))', "queue-submit:$args{queue_target}")
         if defined $args{queue_target};
     my $id = $db->query(
-        <<'SQL', $args{requested_by}, {json => $args{parameters} // {}}, $args{queue_target}, $args{procedure_code}
-insert into executions (procedure_id, requested_by, parameters, queue_target)
-select id, ?::text, ?::jsonb, ?::text from procedures where code = ?
+        <<'SQL', $args{requested_by}, {json => $args{parameters} // {}}, $args{queue_target}, $args{timeout_bypassed} ? 1 : 0, $args{procedure_code}
+insert into executions (procedure_id, requested_by, parameters, queue_target, timeout_bypassed)
+select id, ?::text, ?::jsonb, ?::text, ?::boolean from procedures where code = ?
 returning id
 SQL
     )->hash->{id};

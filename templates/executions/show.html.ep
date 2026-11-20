@@ -38,6 +38,29 @@
   </dd>
 </dl>
 
+% if ($execution->{timeout_bypassed}) {
+<div class="alert" role="alert">
+  <strong>Timeout disattivato per questa esecuzione con conferma utente.</strong>
+  Non viene applicato il limite di durata configurato. La cancellazione resta disponibile;
+  eventuali scritture gia eseguite non vengono annullate.
+</div>
+% }
+% if ($can_bypass_timeout) {
+<div class="alert" role="alert">
+  <strong>La durata stimata supera il timeout. Vuoi rieseguire senza limite di tempo?</strong>
+  <p>La stima e prudenziale, non una durata certa. La conferma crea una nuova richiesta
+    nella coda con lo stesso database, le stesse date e la stessa scelta Sovrascrivi.
+    Disattiva sia il blocco della stima sia il timeout reale, solo per la nuova esecuzione.
+    Cancellazioni o errori possono lasciare scritture parziali.</p>
+  <form method="post" action="<%= url_for 'execution_timeout_bypass', id => $execution->{id} %>">
+    <%= csrf_field %>
+    <label><input type="checkbox" name="confirm_timeout_bypass" value="1" required>
+      Confermo di voler disattivare il timeout per questa riesecuzione</label>
+    <button type="submit">Conferma e riesegui senza timeout</button>
+  </form>
+</div>
+% }
+
 <div class="actions">
 % if (!is_final($execution->{status}) && $execution->{status} ne 'cancel_requested') {
   <form method="post" action="<%= url_for 'execution_cancel', id => $execution->{id} %>">

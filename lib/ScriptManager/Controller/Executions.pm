@@ -63,7 +63,22 @@ sub show ($c) {
         events    => $c->repo->latest_events($exec->{id}),
         artifacts => $c->repo->list_artifacts($exec->{id}),
         refresh   => $final ? 0 : 2,
+        can_bypass_timeout => $c->execution_service->can_bypass_timeout($exec),
     );
+}
+
+sub retry_without_timeout ($c) {
+    return $c->render(text => 'Token CSRF non valido', status => 403)
+        if $c->validation->csrf_protect->has_error('csrf_token');
+    my $exec = $c->repo->get_execution($c->param('id')) or return $c->reply->not_found;
+    return $c->render(text => 'Bypass disponibile solo per una 04 bloccata dalla stima oltre il timeout', status => 409)
+        unless $c->execution_service->can_bypass_timeout($exec);
+    return $c->render(text => 'Confermare esplicitamente la disattivazione del timeout', status => 422)
+        unless ($c->param('confirm_timeout_bypass') // '') eq '1';
+    my $result = $c->execution_service->submit('valida_battute', {},
+        requested_by => $c->current_user, timeout_bypass_from => $exec->{id});
+    return $c->render(json => {errors => $result->{errors}}, status => 422) if $result->{errors};
+    return $c->redirect_to('execution', id => $result->{id});
 }
 
 sub cancel ($c) {
