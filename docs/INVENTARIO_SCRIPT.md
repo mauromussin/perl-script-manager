@@ -702,6 +702,19 @@ procedure eseguibili dell'applicazione.
   lock diventa failed/worker_interrupted. Nessun replay automatico di
   scritture MyISAM parziali. Un cambio host/porta dopo l'invio fa fallire
   la richiesta con queue_target_changed, senza spostarla su un altro server.
+- Controllo generale degli orfani: riconcilia running/cancel_requested con
+  Minion anche senza queue_target, nel ciclo worker (wait/busy), da storico,
+  dettaglio web/API e CLI; controllo limitato a uno ogni 30 secondi per
+  processo, forzabile con `perl bin/procedure reconcile`.
+  La riparazione standard Minion rileva worker senza heartbeat dopo il suo
+  missing_after (default 30 minuti). Nuove esecuzioni protette da un lock
+  PostgreSQL per ID fino al termine; job Minion attivi sempre preservati.
+  Nessuna deduzione dall'eta dell'ultimo progresso. Solo senza lock e con
+  job non attivo/mancante: failed/worker_interrupted con evento ERROR atomico,
+  progresso mantenuto e avviso di scritture parziali, senza replay.
+  Nessuna migrazione; test di riconciliazione, lock, idempotenza e hook in
+  t/integration/execution_service.t. Non classifica richieste senza job
+  Minion; non dichiara morti processi ancora vivi ma bloccati.
 - Upgrade coordinato app/worker a worker fermi. Le richieste precedenti senza
   queue_target non sono migrate retroattivamente nella coda; verificarle e
   ricrearle. Processi esterni/legacy/SQL manuale non partecipano.

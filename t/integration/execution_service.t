@@ -291,4 +291,123 @@ subtest 'un errore di enqueue non lascia una testa di coda fantasma' => sub {
     is $service->execute($next), 'completed';
 };
 
+subtest 'riconciliazione Minion: orfani, processi vivi, concorrenza e vecchie esecuzioni' => sub {
+    my $app = TestHelper::mojo()->app;
+    my $monitor = $app->execution_service;
+    my $repository = $app->repo;
+    my $minion = $app->minion;
+    my $worker = $minion->worker->register;
+    my $start = sub {
+        my $id = $monitor->submit(test_async => {message => 'monitor-test'})->{id};
+        my $exec = $repository->get_execution($id);
+        my $job = $worker->dequeue(0 => {id => $exec->{minion_job_id}});
+        die "Job di test non acquisito\n" unless $job;
+        $repository->mark_running($id);
+        return ($id, $job);
+    };
+
+    my ($dead, $dead_job) = $start->();
+    $repository->update_progress($dead, 73, 'Salvataggio interrotto');
+    $dead_job->fail('Worker went away');
+    is $monitor->reconcile_interrupted(1), 1, 'job gia fallito: corregge anche record senza queue_target';
+    my $failed = $repository->get_execution($dead);
+    is $failed->{status}, 'failed';
+    is $failed->{error_code}, 'worker_interrupted';
+    is $failed->{progress}, 73, 'non inventa un completamento';
+    ok defined $failed->{finished_at};
+    like $failed->{error_message}, qr/scritture parziali/;
+    is $repository->list_events($dead)->[-1]{metadata}{minion_state}, 'failed';
+    my $events = scalar @{$repository->list_events($dead)};
+    is $monitor->reconcile_interrupted(1), 0, 'controllo idempotente';
+    is scalar @{$repository->list_events($dead)}, $events, 'nessun evento duplicato';
+
+    my ($live, $live_job) = $start->();
+    $repository->pg->db->query(q{
+        update executions set started_at = now() - interval '2 days' where id = ?
+    }, $live);
+    is $monitor->reconcile_interrupted(1), 0, 'nessun limite basato su durata o ultimo log';
+    is $repository->get_execution($live)->{status}, 'running', 'job attivo conservato anche senza nuovo lock';
+
+    my ($protected, $protected_job) = $start->();
+    my $guard = $repository->lock_execution($protected);
+    $protected_job->fail('Worker missing but command still alive');
+    is $monitor->reconcile_interrupted(1), 0, 'lock vivo prevale anche sullo stato Minion';
+    is $repository->get_execution($protected)->{status}, 'running';
+    undef $guard;
+    is $monitor->reconcile_interrupted(1), 1, 'diventa fallito solo dopo rilascio del lock';
+
+    my $missing = $monitor->submit(test_async => {message => 'missing-job'})->{id};
+    $minion->job($repository->get_execution($missing)->{minion_job_id})->remove;
+    $repository->mark_running($missing);
+    is $monitor->reconcile_interrupted(1), 1, 'job eliminato dal backend riconosciuto';
+    is $repository->list_events($missing)->[-1]{metadata}{minion_state}, 'missing';
+
+    my ($cancelled, $cancel_job) = $start->();
+    $repository->request_cancel($cancelled);
+    $cancel_job->fail('Worker went away');
+    is $monitor->reconcile_interrupted(1), 1, 'recupera anche cancel_requested rimasti appesi';
+    is $repository->get_execution($cancelled)->{status}, 'failed', 'non dichiara annullate scritture parziali';
+
+    my ($unfinished, $finished_job) = $start->();
+    $finished_job->finish;
+    is $monitor->reconcile_interrupted(1), 1, 'job concluso senza stato finale applicativo riconosciuto';
+    is $repository->get_execution($unfinished)->{status}, 'failed', 'nessun successo inventato dal monitor';
+
+    $repository->pg->db->query(q{
+        update minion_workers set notified = now() - (? * interval '1 second') where id = ?
+    }, $minion->missing_after + 1, $worker->id);
+    is $monitor->reconcile_interrupted(1), 1, 'riparazione Minion rileva worker senza heartbeat oltre missing_after';
+    is $repository->get_execution($live)->{status}, 'failed';
+    is $repository->mark_interrupted($dead, $dead_job->id, 'failed'), 0, 'nessuna riscrittura di record finali';
+
+    my $queued = $monitor->submit(test_async => {message => 'still-queued'})->{id};
+    is $monitor->reconcile_interrupted(1), 0;
+    is $repository->get_execution($queued)->{status}, 'queued', 'nessun errore per richieste in attesa';
+
+    {
+        no warnings qw(redefine once);
+        local *ScriptManager::Command::Example::run = sub {
+            my (undef, $ctx) = @_;
+            ok !$repository->lock_execution($ctx->execution_id), 'execute mantiene il lock fino al termine';
+            is $monitor->reconcile_interrupted(1), 0, 'esecuzione diretta protetta anche con job Minion inattivo';
+            is $repository->get_execution($ctx->execution_id)->{status}, 'running';
+            return {success => 1, message => 'protected'};
+        };
+        is $monitor->execute($queued), 'completed';
+    }
+};
+
+subtest 'controlli automatici nel worker e nella consultazione web/API' => sub {
+    my $web = TestHelper::mojo();
+    my $app = $web->app;
+    my $monitor = $app->execution_service;
+    my $repository = $app->repo;
+    my $worker = $app->minion->worker->register;
+    my $make_orphan = sub {
+        my $id = $monitor->submit(test_async => {message => 'automatic-monitor'})->{id};
+        my $job = $worker->dequeue(0 => {id => $repository->get_execution($id)->{minion_job_id}});
+        die "Job di test non acquisito\n" unless $job;
+        $repository->mark_running($id);
+        die "Fallimento del job di test non registrato\n" unless $job->fail('Worker went away');
+        return $id;
+    };
+    for my $event (qw(wait busy)) {
+        my $id = $make_orphan->();
+        $monitor->next_reconciliation(0);
+        $app->minion->worker->emit($event);
+        is $repository->get_execution($id)->{status}, 'failed', "controllo automatico su evento $event";
+    }
+    my $id = $make_orphan->();
+    $monitor->next_reconciliation(0);
+    $web->get_ok("/api/executions/$id")->status_is(200)
+        ->json_is('/status' => 'failed')->json_is('/error_code' => 'worker_interrupted');
+    $id = $make_orphan->();
+    is $monitor->reconcile_interrupted, 0, 'controlli periodici limitati a uno ogni 30 secondi';
+    is $repository->get_execution($id)->{status}, 'running';
+    $monitor->next_reconciliation(0);
+    $web->get_ok('/executions?status=failed')->status_is(200);
+    is $repository->get_execution($id)->{status}, 'failed', 'anche lo storico aggiorna gli orfani';
+    $worker->unregister;
+};
+
 done_testing;

@@ -235,6 +235,42 @@ verificare quelle pendenti/interrotte e ricrearle dopo l'aggiornamento.
 Le misure legacy prive di target assumono invariato l'host MySQL configurato:
 se e cambiato, non usarle come calibrazione.
 
+### Esecuzioni rimaste running dopo la morte del worker
+
+Il controllo automatico riconcilia `running` e `cancel_requested` con il job
+Minion associato, anche per vecchie richieste senza `queue_target`.
+Viene eseguito nel ciclo del worker (anche quando occupato) e consultando
+storico/dettaglio web o API, al massimo ogni 30 secondi per processo.
+Anche `procedure status` e l'attesa CLI verificano gli stati. Per forzarlo:
+
+```bash
+perl bin/procedure reconcile
+```
+
+Il controllo esegue la riparazione standard di Minion: un worker senza
+heartbeat viene considerato assente dopo `missing_after` (default Minion:
+30 minuti). Un job gia fallito viene invece riconciliato al controllo
+successivo. Senza worker attivi o richieste web/CLI non gira alcun controllo.
+
+Ogni nuova esecuzione mantiene inoltre un advisory lock PostgreSQL fino
+alla registrazione dello stato finale: finche il lock e presente non viene
+segnalata come orfana, nemmeno se Minion perde il worker. Senza lock, un job
+Minion ancora attivo viene comunque conservato, per proteggere anche le
+esecuzioni precedenti all'aggiornamento. **Non si usa l'eta dell'ultimo log
+o del progresso**: una query SQL lunga non equivale a un processo morto.
+Un processo vivo ma bloccato resta soggetto al timeout/cancellazione, non
+a questo controllo di morte del worker.
+
+Se il lock non esiste piu e il job risulta fallito, concluso, tornato in
+attesa o eliminato, l'esecuzione diventa `failed/worker_interrupted`.
+Stato finale ed evento ERROR sono salvati insieme, senza sovrascrivere
+esecuzioni gia concluse ne creare eventi duplicati. Nessun riavvio
+automatico delle scritture e nessun rollback: verificare gli eventuali
+dati radar parziali prima di rieseguire. Le vecchie esecuzioni senza job
+Minion associato non vengono classificate automaticamente.
+Nessuna nuova migrazione o dipendenza; attivare il controllo aggiornando
+app e worker insieme, dopo la conclusione delle procedure in corso.
+
 ## Assegnazione piste: 05 atterraggi e 06 decolli
 
 Dopo `04-valida_battute`, sono disponibili nel catalogo web e nella CLI:
