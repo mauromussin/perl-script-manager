@@ -88,6 +88,14 @@ my %classes = (3 => 'ScriptManager::Command::ValidaTracce', 4 => 'ScriptManager:
     5 => 'ScriptManager::Command::TrovaPistaAtterraggi', 6 => 'ScriptManager::Command::TrovaPistaDecolli',
     7 => 'ScriptManager::Command::AssegnaSID', 8 => 'ScriptManager::Command::RettificaQuote');
 my $target = join ':', lc($ENV{MYSQL_HOST}), $ENV{MYSQL_PORT} // 3306, $schema;
+$repo->sync_procedures([{code => 'valida_battute', name => '04 test', enabled => 1,
+    description => '', handler_class => 'ScriptManager::Command::ValidaBattute',
+    execution_mode => 'async', timeout_seconds => 3600, parameter_schema => {}}]);
+my $calibration = $repo->create_execution(procedure_code => 'valida_battute',
+    requested_by => 'synthetic-calibration', parameters => {database => $schema}, queue_target => $target);
+$repo->mark_finished($calibration, status => 'completed', exit_code => 0);
+$repo->add_event($calibration, 'info', 'Misura sintetica per i test', metadata => {
+    operation => 'validation_saving', units => 1000, seconds => 1, target => $target});
 my $last_id;
 sub run_stage ($stage, %extra) {
     my $fail = delete $extra{fail_write};
@@ -139,6 +147,36 @@ subtest '04 limita anche completamento date e riepilogo' => sub {
     is track_state(4)->[4], '2026-11-02 12:00:00', 'prima battuta decollo';
     is track_state(1)->[4], undef, 'non completa date fuori intervallo';
     is_deeply $r->{data}{report}, [['Y', 16]], 'report limitato ai giorni elaborati';
+};
+
+subtest '04 preflight: nessuna scrittura o invalidazione se stima assente o eccessiva' => sub {
+    my $before_tracks = $admin->selectall_arrayref('SELECT * FROM flay ORDER BY row_id');
+    my $before_hits = $admin->selectall_arrayref('SELECT * FROM battute ORDER BY row_id');
+    $repo->pg->db->query('delete from execution_events where execution_id = ?', $calibration);
+    for my $case ('missing', 'too_slow') {
+        if ($case eq 'too_slow') {
+            $repo->add_event($calibration, 'info', 'Misura sintetica lenta', metadata => {
+                operation => 'validation_saving', units => 1000, seconds => 3600000, target => $target});
+        }
+        eval { run_stage(4, overwrite => 1) };
+        ok(ScriptManager::Exception->caught($@,
+            $case eq 'missing' ? 'timeout_estimate_unavailable' : 'timeout_estimate'), "$case: errore esplicito");
+        is_deeply $admin->selectall_arrayref('SELECT * FROM flay ORDER BY row_id'), $before_tracks,
+            'nessun reset di date, stati, piste o SID';
+        is_deeply $admin->selectall_arrayref('SELECT * FROM battute ORDER BY row_id'), $before_hits,
+            'nessuna modifica a battute o quote';
+        is_deeply days('valida_battute'), ['2026-11-02'], 'storico completamenti non invalidato';
+    }
+    $repo->pg->db->query('delete from execution_events where execution_id = ?', $calibration);
+    $repo->add_event($calibration, 'info', 'Misura sintetica ripristinata', metadata => {
+        operation => 'validation_saving', units => 1000, seconds => 1, target => $target});
+    for (1 .. 12) {
+        my $rejected = $repo->create_execution(procedure_code => 'valida_battute',
+            requested_by => 'preflight-test', parameters => {database => $schema}, queue_target => $target);
+        $repo->mark_finished($rejected, status => 'failed', exit_code => 1, error_code => 'timeout_estimate');
+    }
+    ok scalar(grep { $_->{execution_id} eq $calibration } @{$repo->battute_timing_events($target, $last_id)}),
+        'ripetuti rifiuti prima delle scritture non fanno perdere la calibrazione precedente';
 };
 
 subtest '05 e 06 indipendenti e skip per precedente completamento' => sub {

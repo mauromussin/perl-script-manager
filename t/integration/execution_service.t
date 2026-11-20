@@ -139,7 +139,11 @@ subtest 'logging migration upgrades existing events' => sub {
     my $migrations = Mojo::Pg::Migrations->new(pg => $app->pg)->name('script_manager')
         ->from_file($app->home->child('migrations', 'script_manager.sql')->to_string);
     $migrations->migrate(1);
-    my $id = $app->execution_service->submit(test_sum => {a => 1, b => 2})->{id};
+    my $id = $app->pg->db->query(q{
+        insert into executions (procedure_id, requested_by)
+        select id, 'migration-test' from procedures where code = 'test_sum' returning id
+    })->hash->{id};
+    $app->repo->add_event($id, 'info', 'Evento precedente alla migrazione');
     my $before = $app->repo->list_events($id);
     $migrations->migrate;
     is_deeply $app->repo->list_events($id), $before, 'existing events preserved during upgrade';
@@ -210,6 +214,81 @@ subtest 'history filters' => sub {
     is scalar @{$repo->list_executions(status => 'timed_out')}, 1;
     is scalar @{$repo->list_executions(id => 'not-a-uuid')}, 0, 'invalid id yields no rows';
     is scalar @{$repo->list_executions(id => $rows->[0]{id})}, 1;
+};
+
+subtest 'database queue: FIFO fra procedure, database indipendenti e attesa senza timeout' => sub {
+    local $ENV{MYSQL_HOST} = 'mysql.test';
+    local $ENV{MYSQL_PORT} = 3306;
+    my $one = $service->submit(test_database_a => {database => 'db_one', message => 'first'})->{id};
+    my $two = $service->submit(test_database_b => {database => 'db_one', message => 'second'})->{id};
+    my $other = $service->submit(test_database_a => {database => 'db_two', message => 'independent'})->{id};
+    is $repo->get_execution($two)->{queue_position}, 2, 'FIFO condivisa da procedure diverse';
+    is $service->execute($two), 'queued', 'non supera la richiesta precedente anche se il worker la pesca prima';
+    ok !defined $repo->get_execution($two)->{started_at}, 'attesa esclusa dal timeout';
+    $t->get_ok("/executions/$two")->status_is(200)->content_like(qr/posizione 2/);
+    $t->get_ok("/api/executions/$two")->status_is(200)->json_is('/queue_position' => 2);
+    my $guard = $repo->claim_database_queue($repo->get_execution($one));
+    ok $guard, 'primo job acquisisce lock senza scadenza temporale';
+    ok $repo->mark_running($one);
+    is $service->execute($two), 'queued', 'nessun errore validation_busy: attende';
+    is $service->execute($other), 'completed', 'stessa procedura su altro database indipendente';
+    $repo->mark_finished($one, status => 'completed', exit_code => 0);
+    undef $guard;
+    is $service->execute($two), 'completed', 'il successivo parte dopo il rilascio del lock';
+    $t->app->minion->perform_jobs;
+    is $repo->get_execution($two)->{status}, 'completed', 'job duplicato non riesegue una richiesta conclusa';
+};
+
+subtest 'database queue: annullamento, errori e worker interrotti non bloccano i successivi' => sub {
+    local $ENV{MYSQL_HOST} = 'mysql.test';
+    local $ENV{MYSQL_PORT} = 3306;
+    my $one = $service->submit(test_database_a => {database => 'db_cancel', message => 'cancel'})->{id};
+    my $two = $service->submit(test_database_b => {database => 'db_cancel', message => 'continue'})->{id};
+    is $service->cancel($one), 'cancelled';
+    is $service->execute($two), 'completed', 'richiesta annullata rimossa dalla coda';
+    my $orphan = $service->submit(test_database_a => {database => 'db_orphan', message => 'interrupted'})->{id};
+    ok $repo->mark_running($orphan), 'simula worker morto dopo il passaggio a running';
+    my $next = $service->submit(test_database_b => {database => 'db_orphan', message => 'next'})->{id};
+    is $service->execute($next), 'completed', 'assenza del lock permette recupero del job orfano';
+    is $repo->get_execution($orphan)->{error_code}, 'worker_interrupted', 'nessun falso successo o riavvio di scritture parziali';
+    is $service->execute($orphan), undef, 'job orfano non viene ripetuto automaticamente';
+    my $changed = $service->submit(test_database_a => {database => 'db_changed', message => 'never'})->{id};
+    local $ENV{MYSQL_HOST} = 'different.test';
+    is $service->execute($changed), 'failed', 'configurazione cambiata non sposta silenziosamente la richiesta';
+    is $repo->get_execution($changed)->{error_code}, 'queue_target_changed';
+};
+
+subtest 'Minion rinvia i job in attesa, poi procede senza errore di concorrenza' => sub {
+    local $ENV{MYSQL_HOST} = 'mysql.test';
+    local $ENV{MYSQL_PORT} = 3306;
+    my $one = $service->submit(test_database_a => {database => 'db_minion', message => 'head'})->{id};
+    my $two = $service->submit(test_database_b => {database => 'db_minion', message => 'tail'})->{id};
+    my $guard = $repo->claim_database_queue($repo->get_execution($one));
+    ok $repo->mark_running($one);
+    $t->app->minion->perform_jobs;
+    my $waiting = $repo->get_execution($two);
+    is $waiting->{status}, 'queued';
+    ok !defined $waiting->{started_at}, 'il tentativo Minion non avvia il timeout';
+    my $job = $t->app->minion->job($waiting->{minion_job_id})->info;
+    is $job->{state}, 'inactive', 'job riprogrammato invece di fallire';
+    ok $job->{retries} > 0;
+    $repo->mark_finished($one, status => 'completed', exit_code => 0);
+    undef $guard;
+    is $service->execute($two), 'completed';
+};
+
+subtest 'un errore di enqueue non lascia una testa di coda fantasma' => sub {
+    local $ENV{MYSQL_HOST} = 'mysql.test';
+    local $ENV{MYSQL_PORT} = 3306;
+    {
+        no warnings qw(redefine once);
+        local *Minion::enqueue = sub { die "backend unavailable\n" };
+        eval { $service->submit(test_database_a => {database => 'db_enqueue', message => 'fail'}) };
+        ok(ScriptManager::Exception->caught($@, 'queue_enqueue_failed'));
+    }
+    my $next = $service->submit(test_database_b => {database => 'db_enqueue', message => 'next'})->{id};
+    is $repo->get_execution($next)->{queue_position}, 1;
+    is $service->execute($next), 'completed';
 };
 
 done_testing;

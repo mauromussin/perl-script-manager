@@ -57,6 +57,29 @@ procedures:
         repeat: {type: integer, minimum: 1, maximum: 5, default: 2}
         delay_seconds: {type: number, minimum: 0, maximum: 1, default: 0}
         write_file: {type: boolean, default: true}
+  - code: test_database_a
+    name: Coda database A
+    handler_class: ScriptManager::Command::Example
+    execution_mode: async
+    timeout_seconds: 30
+    exclusive: true
+    queue_by_database: true
+    parameter_schema: &database_schema
+      required: [database, message]
+      properties:
+        database: {type: string, pattern: '^[A-Za-z0-9_]{1,64}$'}
+        message: {type: string, minLength: 1}
+        repeat: {type: integer, default: 1}
+        delay_seconds: {type: number, default: 0}
+        write_file: {type: boolean, default: false}
+  - code: test_database_b
+    name: Coda database B
+    handler_class: ScriptManager::Command::Example
+    execution_mode: async
+    timeout_seconds: 30
+    exclusive: true
+    queue_by_database: true
+    parameter_schema: *database_schema
   - code: test_disabled
     name: Disabilitata
     enabled: false

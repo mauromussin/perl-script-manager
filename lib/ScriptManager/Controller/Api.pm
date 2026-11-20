@@ -23,6 +23,7 @@ sub status ($c) {
     my %out = map { $_ => $exec->{$_} } qw(
         id procedure_code status parameters progress current_step requested_by requested_at
         started_at finished_at exit_code summary error_code error_message
+        queue_target queue_position
     );
     $out{events} = [map { +{%{$_}{qw(level event_type message created_at)}} } @{$c->repo->list_events($exec->{id})}];
     $out{artifacts} = [

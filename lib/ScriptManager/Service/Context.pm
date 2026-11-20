@@ -5,12 +5,20 @@ use Digest::SHA;
 use Mojo::File 'path';
 use Mojolicious::Types;
 use ScriptManager::Exception;
+use Time::HiRes qw(clock_gettime CLOCK_MONOTONIC);
 
 # Execution context passed to every command: logging, progress, cancellation and output files.
 has [qw(execution_id repo output_root logger retention_days)];
 has 'validation_guard';
 has debug_operations => 0;
+has timeout_seconds => 3600;
+has started_monotonic => sub { clock_gettime(CLOCK_MONOTONIC) };
 has types => sub { Mojolicious::Types->new };
+
+sub elapsed_seconds ($self) {
+    my $start = $self->started_monotonic;
+    return clock_gettime(CLOCK_MONOTONIC) - $start;
+}
 
 sub output_dir ($self) {
     return $self->{output_dir} //= path($self->output_root, $self->execution_id)->make_path;

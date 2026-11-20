@@ -10,6 +10,7 @@ procedures:
       credenziali e host sono configurati sul server. I duplicati annullano il caricamento.
     enabled: true
     handler_class: ScriptManager::Command::CaricaDB
+    queue_by_database: true
     execution_mode: async
     timeout_seconds: 3600
     exclusive: true
@@ -26,6 +27,7 @@ procedures:
       Salta i giorni gia completati, salvo Sovrascrivi (azzera anche i risultati dipendenti).
     enabled: true
     handler_class: ScriptManager::Command::ValidaTracce
+    queue_by_database: true
     execution_mode: async
     timeout_seconds: 3600
     exclusive: true
@@ -40,8 +42,10 @@ procedures:
       Scritture in AutoCommit: annullamenti ed errori non annullano gli aggiornamenti gia eseguiti.
       Date facoltative: senza intervallo considera tutto il database.
       Salta i giorni gia completati, salvo Sovrascrivi (azzera anche pista e SID).
+      Prima delle scritture stima la durata: rifiuta stime oltre il timeout o prive di storico misurabile.
     enabled: true
     handler_class: ScriptManager::Command::ValidaBattute
+    queue_by_database: true
     execution_mode: async
     timeout_seconds: 3600
     exclusive: true
@@ -66,6 +70,7 @@ procedures:
       Salta i giorni gia completati, salvo Sovrascrivi.
     enabled: true
     handler_class: ScriptManager::Command::TrovaPistaAtterraggi
+    queue_by_database: true
     execution_mode: async
     timeout_seconds: 3600
     exclusive: true
@@ -110,6 +115,7 @@ procedures:
       Salta i giorni gia completati, salvo Sovrascrivi (azzera anche la SID dipendente).
     enabled: true
     handler_class: ScriptManager::Command::TrovaPistaDecolli
+    queue_by_database: true
     execution_mode: async
     timeout_seconds: 3600
     exclusive: true
@@ -129,6 +135,7 @@ procedures:
       AutoCommit: errori e annullamenti non annullano le scritture gia eseguite.
     enabled: true
     handler_class: ScriptManager::Command::AssegnaSID
+    queue_by_database: true
     execution_mode: async
     timeout_seconds: 3600
     exclusive: true
@@ -156,6 +163,7 @@ procedures:
       AutoCommit: errori e annullamenti non annullano le scritture gia eseguite.
     enabled: true
     handler_class: ScriptManager::Command::RettificaQuote
+    queue_by_database: true
     execution_mode: async
     timeout_seconds: 3600
     exclusive: true
@@ -178,6 +186,7 @@ procedures:
       Dopo una sostituzione del meteo, ricalcolare 10 con Sovrascrivi.
     enabled: true
     handler_class: ScriptManager::Command::CaricaMeteo
+    queue_by_database: true
     execution_mode: async
     timeout_seconds: 3600
     exclusive: true
@@ -197,6 +206,7 @@ procedures:
       Date facoltative; Sovrascrivi ricalcola anche lo stato 3. AutoCommit senza rollback.
     enabled: true
     handler_class: ScriptManager::Command::CorreggiQuote
+    queue_by_database: true
     execution_mode: async
     timeout_seconds: 3600
     exclusive: true

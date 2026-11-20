@@ -129,18 +129,84 @@ sub weather_day ($self, $target, $day) {
 }
 
 sub create_execution ($self, %args) {
-    return $self->pg->db->query(
-        <<'SQL', $args{requested_by}, {json => $args{parameters} // {}}, $args{procedure_code}
-insert into executions (procedure_id, requested_by, parameters)
-select id, ?::text, ?::jsonb from procedures where code = ?
+    my $db = $self->pg->db;
+    my $tx = $db->begin;
+    $db->query('select pg_advisory_xact_lock(hashtextextended(?, 0))', "queue-submit:$args{queue_target}")
+        if defined $args{queue_target};
+    my $id = $db->query(
+        <<'SQL', $args{requested_by}, {json => $args{parameters} // {}}, $args{queue_target}, $args{procedure_code}
+insert into executions (procedure_id, requested_by, parameters, queue_target)
+select id, ?::text, ?::jsonb, ?::text from procedures where code = ?
 returning id
 SQL
     )->hash->{id};
+    $tx->commit;
+    return $id;
 }
 
 sub get_execution ($self, $id) {
     return undef unless $self->is_uuid($id);
-    return $self->pg->db->query("$EXECUTION_SELECT where e.id = ?", $id)->expand->hash;
+    my $exec = $self->pg->db->query("$EXECUTION_SELECT where e.id = ?", $id)->expand->hash;
+    if ($exec && defined $exec->{queue_target} && $exec->{status} eq 'queued') {
+        $exec->{queue_position} = $self->pg->db->query(q{
+            select count(*) + 1 as position from executions
+            where queue_target = ? and queue_order < ? and status in ('queued', 'running', 'cancel_requested')
+        }, $exec->{queue_target}, $exec->{queue_order})->hash->{position};
+    }
+    return $exec;
+}
+
+sub claim_database_queue ($self, $exec) {
+    my $db = $self->pg->db;
+    my $tx = $db->begin;
+    return undef unless $db->query(
+        'select pg_try_advisory_xact_lock(hashtextextended(?, 0)) as locked',
+        "database-queue:$exec->{queue_target}")->hash->{locked};
+    # A running managed execution without its lock was interrupted, not safely retryable.
+    my $orphans = $self->pg->db->query(q{
+        update executions set status = 'failed', finished_at = now(), exit_code = 1,
+          error_code = 'worker_interrupted',
+          error_message = 'Worker interrotto; possibili scritture parziali. Verificare i dati prima di rieseguire.'
+        where queue_target = ? and status in ('running', 'cancel_requested') returning id
+    }, $exec->{queue_target})->hashes->to_array;
+    $self->add_event($_->{id}, 'error',
+        'Worker interrotto: lock della coda rilasciato senza conclusione; nessun retry automatico')
+        for @$orphans;
+    my $first = $db->query(q{
+        select id from executions where queue_target = ? and status = 'queued'
+        order by queue_order limit 1
+    }, $exec->{queue_target})->hash;
+    return undef unless $first && $first->{id} eq $exec->{id};
+    return {db => $db, tx => $tx};
+}
+
+sub note_queue_wait ($self, $id) {
+    my $step = 'In attesa del proprio turno nella coda del database';
+    my $changed = $self->pg->db->query(q{
+        update executions set current_step = ? where id = ? and status = 'queued'
+          and current_step is distinct from ?
+    }, $step, $id, $step)->rows;
+    $self->add_event($id, 'info', $step, event_type => 'state') if $changed;
+}
+
+sub battute_timing_events ($self, $target, $exclude_id) {
+    my ($database) = $target =~ /:([^:]+)\z/;
+    return $self->pg->db->query(q{
+        with recent as (
+          select e.id from executions e join procedures p on p.id = e.procedure_id
+          where p.code = 'valida_battute' and e.id <> ?
+            and e.requested_at >= now() - interval '90 days'
+            and (e.queue_target = ? or (e.queue_target is null and e.parameters->>'database' = ?))
+            and exists (select 1 from execution_events measured where measured.execution_id = e.id
+              and (measured.message ~ 'Salvataggio:.*[0-9]+ di [0-9]+ operazioni'
+                or measured.metadata->>'operation' = 'validation_saving'))
+          order by e.requested_at desc limit 10
+        )
+        select v.execution_id, extract(epoch from v.created_at) as time, v.message, v.metadata
+        from recent e join execution_events v on v.execution_id = e.id
+        where v.message like 'Salvataggio:%' or v.metadata->>'operation' = 'validation_saving'
+        order by v.execution_id, v.id
+    }, $exclude_id, $target, $database)->expand->hashes->to_array;
 }
 
 sub list_executions ($self, %f) {
@@ -179,7 +245,7 @@ sub set_job_id ($self, $id, $job_id) {
 sub mark_running ($self, $id) {
     return $self->pg->db->query(
         <<'SQL', $id)->rows > 0;
-update executions set status = 'running', started_at = now(), progress = 0
+update executions set status = 'running', started_at = now(), progress = 0, current_step = null
  where id = ? and status = 'queued'
 SQL
 }

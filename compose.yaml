@@ -56,7 +56,7 @@ services:
   app:
     <<: *production-app
     ports:
-      - "127.0.0.1:3080:3000"
+      - "0.0.0.0:3080:3000"
 
   worker:
     <<: *production-app

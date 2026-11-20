@@ -18,8 +18,18 @@ volumi Docker; il codice non viene montato nell'immagine di produzione.
 
 `APP_POSTGRES_USER`, `APP_POSTGRES_PASSWORD`, `APP_POSTGRES_DB` e `SCRIPT_MANAGER_SECRET`
 sono configurazioni locali obbligatorie. La porta database è pubblicata solo su
-`127.0.0.1:5433`; l'app è disponibile su `127.0.0.1:3080` (porta container `3000`).
+`127.0.0.1:5433`; l'app è pubblicata sulle interfacce IPv4 dell'host,
+porta `3080` (porta container `3000`), accessibile anche dalla LAN tramite
+`http://<IP-host>:3080`. L'accesso locale su `127.0.0.1:3080` resta disponibile.
 La password deve essere compatibile con una URL PostgreSQL oppure percent-encoded.
+
+**Accesso LAN senza login:** consentito solo su rete fidata, come scelta
+esplicita di questo deployment. Chi raggiunge la porta puo avviare procedure
+e leggere risultati. Non esporre la porta su Internet o reti non fidate;
+limitare i client tramite firewall/rete. Per tornare al solo accesso locale,
+usare `127.0.0.1:3080:3000` nella pubblicazione del servizio `app`.
+Su Windows verificare il profilo firewall attivo: se blocca la porta, consentire
+TCP 3080 soltanto alle reti/client autorizzati, non disabilitare il firewall.
 
 ### Cartella delle tracce radar
 
@@ -153,9 +163,67 @@ Gli script originali restano invariati.
 
 Come nel legacy, le scritture sono in AutoCommit: cancellazione o errore non
 annullano gli aggiornamenti gia eseguiti. Verificare i log e i dati prima di
-rieseguire un'elaborazione interrotta. Il blocco condiviso dei comandi 03-10
-impedisce modifiche concorrenti sullo stesso database; non protegge dai
-caricamenti 02 o da processi esterni, da non avviare contemporaneamente.
+rieseguire un'elaborazione interrotta. La coda condivisa dei comandi 02-10
+serializza le richieste sullo stesso database; script legacy e processi
+esterni non partecipano, da non avviare contemporaneamente.
+
+### Coda per database e controllo preventivo della durata
+
+Le richieste web/API/CLI delle fasi **02-10** entrano in una coda FIFO
+identificata da host MySQL, porta e nome database. Anche procedure diverse
+sullo stesso database attendono il proprio turno, anziche fallire per
+conflitto. La stessa procedura su database diversi puo procedere in parallelo,
+se ci sono worker liberi. La coda non suddivide automaticamente le date:
+si possono inviare piu 04 su intervalli distinti, nell'ordine desiderato.
+
+Stato `queued`, posizione nella pagina di dettaglio/API (`queue_position`)
+e messaggio di attesa rendono visibile la coda. La posizione include
+l'eventuale richiesta in corso. L'attesa non consuma il timeout.
+L'annullamento di una richiesta accodata libera il turno; errori e timeout
+non cancellano le richieste successive. **Non e una catena di dipendenze**:
+se 04 fallisce, una 05 gia accodata potra comunque partire sui dati rimasti.
+Verificare il risultato prima di inviare fasi dipendenti.
+
+Il lock PostgreSQL resta acquisito fino alla conclusione, senza una scadenza
+che possa far sovrapporre processi lunghi. Se un worker scompare e il lock
+e rilasciato, la successiva richiesta sulla stessa coda marca l'esecuzione
+gestita rimasta attiva come `failed/worker_interrupted`, con avviso di
+possibili scritture parziali: non la ripete automaticamente.
+
+Per **04** il timeout resta quello configurato (3600 secondi nel catalogo).
+Quando arriva il suo turno, prima di qualsiasi reset/scrittura radar:
+
+- conta le battute delle tracce effettivamente selezionate, considerando
+  date, skip e Sovrascrivi;
+- misura l'analisi reale su campioni A/D suddivisi per numerosita di battute,
+  includendo estremi e mediana di ogni gruppo;
+- stima il salvataggio dai tempi delle ultime dieci esecuzioni 04 con misure
+  sullo stesso database negli ultimi 90 giorni; usa anche progressi legacy
+  interpretabili e intervalli parziali di almeno dieci operazioni;
+- sceglie i tempi piu prudenziali e applica un margine 2x; dopo l'analisi
+  completa ricontrolla il budget col numero esatto di operazioni previste.
+
+Se la stima supera il timeout, fallisce con `timeout_estimate`, indicando
+di ridurre l'intervallo. Se manca uno storico misurabile, fallisce con
+`timeout_estimate_unavailable`: **anche un nuovo database senza storico
+viene bloccato**, come richiesto, senza coefficienti inventati o bypass.
+Serve una calibrazione verificata/storico operativo disponibile; non e
+previsto in questa modifica un comando di calibrazione o un override.
+Uno skip integrale di giorni gia completati non richiede una stima.
+
+Il preflight legge soltanto il database radar; log e misure sono salvati in
+PostgreSQL. La stima viene registrata nei log, non e una garanzia: carico,
+I/O e complessita delle tracce possono variare, e il timeout reale resta
+attivo, includendo il preflight. Una stima favorevole non rende atomiche le
+scritture MyISAM. Gli altri comandi hanno la coda, non questo estimatore.
+
+La migrazione PostgreSQL **5** aggiunge target e ordine persistenti alle
+esecuzioni, senza modifiche allo schema radar. Aggiornare app e worker
+insieme a worker fermi, senza mescolare versioni. Le vecchie richieste prive
+di target persistente non sono retroattivamente gestite dalla nuova coda:
+verificare quelle pendenti/interrotte e ricrearle dopo l'aggiornamento.
+Le misure legacy prive di target assumono invariato l'host MySQL configurato:
+se e cambiato, non usarle come calibrazione.
 
 ## Assegnazione piste: 05 atterraggi e 06 decolli
 
@@ -194,8 +262,8 @@ estremi richiesti interrompono il comando prima del salvataggio.
 Nessuna traccia da elaborare e un esito positivo senza scritture.
 AutoCommit non consente rollback dopo errori o annullamenti durante
 il salvataggio. Non avviare contemporaneamente altri passaggi sullo stesso
-database: 03-10 condividono un blocco per database, ma 02 e processi esterni
-non partecipano a questo blocco.
+database: 02-10 condividono la coda per database; script/processi esterni
+non partecipano. Resta anche il blocco difensivo interno 03-10.
 Gli script legacy restano invariati.
 
 ## Assegnazione SID: 07
@@ -323,7 +391,7 @@ limiti API, date non disponibili o valori NULL/non validi fanno fallire
 il comando: nessun fallback a previsioni, zeri o altre sorgenti.
 Le scritture sono AutoCommit: un'interruzione puo lasciare un giorno
 parziale; ripristinarlo con Sovrascrivi. Il blocco target e condiviso con
-03-10, ma non coordina 02, script legacy o SQL esterno.
+03-10; la coda applicativa coordina anche 02, non script legacy o SQL esterno.
 
 Ogni giorno importato registra in PostgreSQL ARP, quota e impronta delle
 temperature/pressioni effettivamente salvate. La fase 10 usa solo questa
@@ -765,5 +833,7 @@ Parametri con `x-sensitive: true` non vengono salvati e richiedono `execution_mo
 ## Non ancora definito
 
 Autenticazione e ruoli, caricamento file come parametro e selezione di risorse autorizzate
-dipendono dalle decisioni aperte della sezione 20 del documento di analisi; fino ad allora l'utente è `anonymous`
-e l'applicazione va esposta solo su `127.0.0.1`.
+dipendono dalle decisioni aperte della sezione 20 del documento di analisi;
+l'utente e `anonymous`. Il deployment corrente consente esplicitamente
+l'accesso da LAN fidata senza login: non e adatto a Internet o reti non fidate.
+Per questi contesti occorre prima introdurre un accesso autenticato.

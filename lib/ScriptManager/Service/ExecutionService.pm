@@ -3,6 +3,7 @@ use Mojo::Base -base, -signatures;
 
 use Log::Any ();
 use Scalar::Util 'blessed';
+use Time::HiRes qw(clock_gettime CLOCK_MONOTONIC);
 use ScriptManager::Exception;
 use ScriptManager::Service::Context;
 
@@ -19,15 +20,33 @@ sub submit ($self, $code, $input, %o) {
     my ($params, $errors) = $validator->validate($input);
     return {errors => $errors} if @$errors;
 
+    my $target;
+    if ($proc->{queue_by_database}) {
+        return {errors => [{path => '/database', message => 'Configurazione host/porta MySQL o database non valida per la coda'}]}
+            unless ($ENV{MYSQL_HOST} // '') =~ /\A[A-Za-z0-9.:-]+\z/
+                && ($ENV{MYSQL_PORT} // 3306) =~ /\A\d+\z/
+                && ($ENV{MYSQL_PORT} // 3306) > 0 && ($ENV{MYSQL_PORT} // 3306) <= 65535
+                && ($params->{database} // '') =~ /\A[A-Za-z0-9_]{1,64}\z/;
+        $target = join ':', lc($ENV{MYSQL_HOST}), 0 + ($ENV{MYSQL_PORT} // 3306), $params->{database};
+    }
     my $id = $self->repo->create_execution(
         procedure_code => $code,
         requested_by   => $o{requested_by} // 'anonymous',
         parameters     => $validator->redact($params),
+        queue_target   => $target,
     );
     $self->repo->add_event($id, 'info', 'Esecuzione registrata', event_type => 'state');
 
     if ($proc->{execution_mode} eq 'async') {
-        my $job_id = $self->minion->enqueue(run_procedure => [$id], {attempts => 1});
+        my $job_id = eval { $self->minion->enqueue(run_procedure => [$id], {attempts => 1}) };
+        unless (defined $job_id) {
+            $self->logger->error("[exec=$id] Registrazione Minion fallita: " . ($@ || 'identificatore job assente'));
+            my $message = 'Registrazione nel worker fallita; inviare una nuova richiesta';
+            $self->repo->mark_finished($id, status => 'failed', exit_code => 1,
+                error_code => 'queue_enqueue_failed', error_message => $message);
+            $self->repo->add_event($id, 'error', $message, event_type => 'state');
+            ScriptManager::Exception->throw('queue_enqueue_failed', $message);
+        }
         $self->repo->set_job_id($id, $job_id);
         $self->repo->add_event($id, 'info', "Procedura $code accodata al worker (job $job_id)", event_type => 'state');
     }
@@ -39,7 +58,25 @@ sub submit ($self, $code, $input, %o) {
 
 sub execute ($self, $id, $params = undef) {
     my $exec = $self->repo->get_execution($id) or return;
+    return unless $exec->{status} eq 'queued';
     my $proc = $self->registry->get($exec->{procedure_code});
+    my $queue_guard;
+    if (defined $exec->{queue_target}) {
+        $queue_guard = $self->repo->claim_database_queue($exec);
+        unless ($queue_guard) {
+            $self->repo->note_queue_wait($id);
+            return 'queued';
+        }
+        my $target = join ':', lc($ENV{MYSQL_HOST} // ''), 0 + ($ENV{MYSQL_PORT} // 3306),
+            $exec->{parameters}{database};
+        if ($target ne $exec->{queue_target}) {
+            $self->repo->mark_finished($id, status => 'failed', exit_code => 1,
+                error_code => 'queue_target_changed',
+                error_message => 'Host/porta MySQL cambiati dopo la richiesta. Inviare una nuova richiesta.');
+            $self->repo->add_event($id, 'error', 'Target della coda diverso dalla configurazione attuale');
+            return 'failed';
+        }
+    }
     return unless $self->repo->mark_running($id);
 
     my $ctx = ScriptManager::Service::Context->new(
@@ -49,6 +86,8 @@ sub execute ($self, $id, $params = undef) {
         logger         => $self->logger,
         debug_operations => $self->debug_operations,
         retention_days => $proc ? ($proc->{retention_days} // $self->retention_days) : $self->retention_days,
+        timeout_seconds => $proc ? $proc->{timeout_seconds} : 3600,
+        started_monotonic => clock_gettime(CLOCK_MONOTONIC),
     );
     $ctx->log(info => 'Esecuzione avviata', event_type => 'state');
 
@@ -126,11 +165,13 @@ sub register_tasks ($self) {
             my $exec = $self->repo->get_execution($id) or return $job->fail('Esecuzione non trovata');
             my $proc = $self->registry->get($exec->{procedure_code});
             my $guard;
-            if ($proc && $proc->{exclusive}) {
+            if ($proc && $proc->{exclusive} && !defined $exec->{queue_target}) {
                 $guard = $job->minion->guard("procedure:$exec->{procedure_code}", $proc->{timeout_seconds} + 60, {limit => 1})
                     or return $job->retry({delay => 5, attempts => $job->retries + 2});
             }
-            $self->execute($id);
+            my $status = $self->execute($id);
+            return $job->retry({delay => 5, attempts => $job->retries + 2})
+                if defined $status && $status eq 'queued';
             return;
         }
     );

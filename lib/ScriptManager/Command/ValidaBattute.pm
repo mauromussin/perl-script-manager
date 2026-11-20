@@ -6,10 +6,13 @@ use Scalar::Util 'looks_like_number';
 use POSIX 'isfinite';
 use ScriptManager::Exception;
 use ScriptManager::Service::ValidationWindow;
+use ScriptManager::Service::BattutePreflight;
+use Time::HiRes qw(clock_gettime CLOCK_MONOTONIC);
 
 has [qw(logger process_runner)];
 has connect_db => sub { sub (@args) { DBI->connect(@args) } };
 has window_class => 'ScriptManager::Service::ValidationWindow';
+has preflight => sub { ScriptManager::Service::BattutePreflight->new };
 
 sub configure_schema ($class, $schema, $directory) {
     ScriptManager::Service::ValidationWindow->configure_schema($schema);
@@ -114,6 +117,24 @@ sub analyze_track ($class, $hits, $operation, $ctx = undef) {
     };
 }
 
+sub plan_track ($self, $db, $ctx, $window, $track) {
+    my $hits = $db->selectall_arrayref(
+        'SELECT row_id, UNIX_TIMESTAMP(time_italy), X_m, Y_m, H_m, validation FROM battute WHERE flay_id = ? ORDER BY row_id',
+        undef, $track->[0]);
+    my $input = $window->overwrite ? [map { [@$_[0 .. 4], undef] } @$hits] : $hits;
+    my $plan = __PACKAGE__->analyze_track($input, $track->[1], $ctx);
+    my %updates;
+    for my $hit (@$hits) {
+        my $flag = $plan->{flags}{$hit->[0]};
+        push @{$updates{$flag}}, $hit->[0]
+            if defined $flag && ($window->overwrite || !defined $hit->[5] || $flag ne $hit->[5]);
+    }
+    delete $plan->{flags};
+    $plan->{id} = $track->[0];
+    $plan->{updates} = \%updates;
+    return $plan;
+}
+
 sub run ($self, $ctx, $params) {
     ScriptManager::Service::ValidationWindow->validate_params($params);
     ScriptManager::Exception->throw('invalid_database', 'Nome database MySQL non valido')
@@ -143,53 +164,46 @@ sub run ($self, $ctx, $params) {
     }
     my $result;
     my $window;
+    my ($saving_started, $saved, $units);
+    $saved = 0;
     my $ok = eval {
         $window = $self->window_class->new(db => $db, ctx => $ctx, params => $params, stage => 4)->prepare;
         my ($filter, @scope_bind) = $window->filter;
+        my $selection = ($window->overwrite ? q{validation_fl IN ('Y','L','D','P')}
+            : 'validation_bt IS NULL AND validation_fl = ?') . $filter;
+        my @selection_bind = (($window->overwrite ? () : ('Y')), @scope_bind);
         my $tracks = $db->selectall_arrayref(
-            'SELECT row_id, flay_operation FROM flay WHERE '
-            . ($window->overwrite ? q{validation_fl IN ('Y','L','D','P')} : 'validation_bt IS NULL AND validation_fl = ?')
-            . $filter . ' ORDER BY row_id', undef, ($window->overwrite ? () : ('Y')), @scope_bind);
+            "SELECT row_id, flay_operation FROM flay WHERE $selection ORDER BY row_id", undef, @selection_bind);
         ScriptManager::Exception->throw('invalid_operation',
             'Sono presenti tracce da validare con operazione diversa da A/D; nessuna modifica eseguita')
             if grep { !defined $_->[1] || $_->[1] !~ /\A[AD]\z/ } @$tracks;
         $ctx->log(info => scalar(@$tracks) . ' tracce da analizzare; salvataggio in AutoCommit, senza rollback');
+        $self->preflight->check($db, $ctx, $window, $tracks, $selection, \@selection_bind,
+            sub ($track) { $self->plan_track($db, $ctx, $window, $track) });
         my (@plans, $analyzed);
         $analyzed = 0;
         for my $track (@$tracks) {
             $ctx->check_cancel;
-            my $hits = $db->selectall_arrayref(
-                'SELECT row_id, UNIX_TIMESTAMP(time_italy), X_m, Y_m, H_m, validation FROM battute WHERE flay_id = ? ORDER BY row_id',
-                undef, $track->[0]);
-            my $input = $window->overwrite ? [map { [@$_[0 .. 4], undef] } @$hits] : $hits;
-            my $plan = __PACKAGE__->analyze_track($input, $track->[1], $ctx);
-            my %updates;
-            for my $hit (@$hits) {
-                my $flag = $plan->{flags}{$hit->[0]};
-                push @{$updates{$flag}}, $hit->[0]
-                    if defined $flag && ($window->overwrite || !defined $hit->[5] || $flag ne $hit->[5]);
-            }
-            delete $plan->{flags};
-            $plan->{id} = $track->[0];
-            $plan->{updates} = \%updates;
-            push @plans, $plan;
+            push @plans, $self->plan_track($db, $ctx, $window, $track);
             $analyzed++;
             $ctx->progress(int(50 * $analyzed / (@$tracks || 1)),
                 "Analisi: $analyzed di " . scalar(@$tracks) . ' tracce');
         }
 
-        my ($saved, $last_percent) = (0, 50);
-        my $units = 2;
+        my $last_percent = 50;
+        $units = 2;
         for my $plan (@plans) {
             $units++;
             $units += int((@$_ + 499) / 500) for values %{$plan->{updates}};
         }
+        $self->preflight->check_saving($ctx, $units);
         my $advance = sub ($step) {
             my $percent = 50 + int(49 * $saved / $units);
             $ctx->progress($percent, $step) if $percent != $last_percent || $saved == 0;
             $last_percent = $percent;
         };
         $advance->('Salvataggio: classificazioni delle battute e delle tracce');
+        $saving_started = clock_gettime(CLOCK_MONOTONIC);
         $window->start_saving;
         for my $plan (@plans) {
             for my $flag (sort keys %{$plan->{updates}}) {
@@ -239,6 +253,11 @@ sub run ($self, $ctx, $params) {
         1;
     };
     $error = $@;
+    if (defined $saving_started && $saved >= 10) {
+        $ctx->log(info => "Misura salvataggio 04: $saved operazioni", operation => 'validation_saving',
+            units => $saved, seconds => clock_gettime(CLOCK_MONOTONIC) - $saving_started,
+            target => $window->target);
+    }
     if (!$ok) {
         $ctx->log(error => 'Validazione battute interrotta; eventuali scritture gia eseguite non sono annullate');
         my $closed = eval { $db->disconnect; 1 };

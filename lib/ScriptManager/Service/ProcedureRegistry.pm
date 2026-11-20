@@ -55,6 +55,9 @@ sub _check ($self, $p) {
     }
     die "Procedura $code: execution_mode deve essere sync o async\n"
         unless $p->{execution_mode} =~ /\A(?:sync|async)\z/;
+    die "Procedura $code: queue_by_database richiede async e parametro database\n"
+        if $p->{queue_by_database}
+            && ($p->{execution_mode} ne 'async' || !exists $p->{parameter_schema}{properties}{database});
     die "Procedura $code: timeout_seconds non valido\n" unless $p->{timeout_seconds} =~ /\A[1-9]\d*\z/;
     die "Procedura $code: handler_class fuori da ScriptManager::Command::\n"
         unless $p->{handler_class} =~ /\AScriptManager::Command::\w+(?:::\w+)*\z/;

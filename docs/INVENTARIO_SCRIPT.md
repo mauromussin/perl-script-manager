@@ -191,6 +191,24 @@ procedure eseguibili dell'applicazione.
   in gruppi di massimo 500 ID, tracce, date), riepilogo 99%, concluso 100%
   solo dopo chiusura connessione. AutoCommit mantiene i limiti del legacy:
   nessun rollback delle scritture parziali.
+- Controllo preventivo aggiunto a 04: prima di reset/scritture, conteggio
+  delle battute nello scope effettivo e campionamento dell'algoritmo reale
+  per operazione A/D e numerosita (minimo, mediana, massimo del gruppo).
+  Salvataggio stimato dalle ultime dieci esecuzioni con misure dello stesso
+  database entro 90 giorni, anche progressi legacy/parziali con delta >=10
+  operazioni. Tempi piu prudenziali, margine 2x e secondo controllo prima
+  del salvataggio sul numero esatto di UPDATE pianificati.
+  Stima >timeout: errore timeout_estimate; storico insufficiente: errore
+  timeout_estimate_unavailable, senza scritture radar ne invalidazioni.
+  Nessun aumento automatico del timeout, nessun bypass per il primo avvio
+  su database senza storico; occorre una calibrazione verificata separata.
+  L'intervallo gia interamente saltato non richiede stima. Preflight incluso
+  nel timeout effettivo, non nell'attesa in coda; stima euristica, non garanzia.
+  I nuovi salvataggi registrano misure strutturate anche in caso di
+  interruzione, se sono state completate almeno dieci operazioni.
+  Progressione resta 0 durante il preflight, poi segue lo schema esistente.
+  Test: t/unit/battute_preflight.t e t/integration/validation_window.t,
+  con rifiuti prima di reset e storico invariato su MyISAM temporaneo.
 
 ## Gruppo 05-trova_pista_atterraggi*
 
@@ -509,7 +527,8 @@ procedure eseguibili dell'applicazione.
 - Salvataggio AutoCommit, un giorno alla volta: errore puo lasciare
   una giornata parziale, ma non cancella anticipatamente i giorni seguenti.
   Richiede Sovrascrivi per recuperare un giorno parziale; il retry normale
-  lo salterebbe. Blocco target condiviso 03-10, non con 02/legacy esterno.
+  lo salterebbe. Blocco difensivo interno 03-10; la coda applicativa include
+  anche 02, non script legacy esterni.
   03-08 non invalidano meteo e 09 non ricalcola piste/SID/quote/validazioni.
   10 integrato usa quota ARP, non le quote delle centraline legacy.
   09 invalida lo storico 10 per ciascun giorno modificato, ma non azzera
@@ -620,8 +639,8 @@ procedure eseguibili dell'applicazione.
 - Storico persistente PostgreSQL `validation_days`, separato per target
   MySQL e comando. Skip soltanto per giorni di esecuzioni completate con
   successo; nessuna deduzione dai soli flag esistenti o da vecchie esecuzioni
-  senza storico giornaliero. Blocco condiviso 03-10 sullo stesso target;
-  non coordina 02 o processi esterni.
+  senza storico giornaliero. Blocco difensivo interno 03-10 sullo stesso
+  target, piu coda applicativa 02-10; processi esterni non coordinati.
 - `overwrite` disabilitato per default: ricalcola il comando e azzera i
   risultati dipendenti, invalidando prima il relativo storico giornaliero.
   03 azzera battute/stati/date/pista/SID; 04 ricalcola da esiti 03 validi
@@ -649,3 +668,37 @@ procedure eseguibili dell'applicazione.
   Verifica selezioni locali e confini giornalieri, report/date limitati,
   skip, ricalcolo, invalidazione dipendenti, errore dopo UPDATE, blocchi
   concorrenti e form web. Anagrafica sintetica; nessuna scrittura operativa.
+
+## Coda gestita dei comandi MySQL 02-10
+
+- Catalogo: queue_by_database=true per 02-10, solo asincroni con parametro
+  database. Target persistente host configurato (minuscolo), porta e nome DB.
+  La migrazione PostgreSQL 5 aggiunge executions.queue_target/queue_order
+  e indice dei job non conclusi; nessuna modifica al database radar.
+- FIFO tra procedure diverse sul medesimo target. Inserimenti ordinati da
+  sequenza sotto lock breve; avvio solo della prima queued, sotto advisory
+  lock PostgreSQL mantenuto fino al salvataggio dello stato finale.
+  Nessuna scadenza del lock basata sul timeout. Database differenti
+  indipendenti, anche per la medesima procedura, entro i worker disponibili.
+  L'esclusivita globale per codice resta per procedure non gestite dalla coda.
+- Minion rinvia i job in attesa ogni cinque secondi; restano queued,
+  started_at NULL e senza consumo del timeout. Posizione nella pagina
+  esecuzione e nell'API, comprensiva del job attivo. Un messaggio persistente
+  segnala l'attesa senza aggiungere un evento a ogni retry.
+- Cancellare una queued permette al successivo di avanzare. Un fallimento,
+  compreso il rifiuto della stima, non elimina i job successivi: FIFO non
+  significa dipendenza fra fasi. Nessuna suddivisione automatica delle date.
+- Alla ripresa, una running/cancel_requested gestita che non possiede piu il
+  lock diventa failed/worker_interrupted. Nessun replay automatico di
+  scritture MyISAM parziali. Un cambio host/porta dopo l'invio fa fallire
+  la richiesta con queue_target_changed, senza spostarla su un altro server.
+- Upgrade coordinato app/worker a worker fermi. Le richieste precedenti senza
+  queue_target non sono migrate retroattivamente nella coda; verificarle e
+  ricrearle. Processi esterni/legacy/SQL manuale non partecipano.
+- Stima preventiva inizialmente solo per 04, descritta nella sua sezione.
+  Le misure legacy senza target persistente assumono lo stesso host MySQL
+  della configurazione attuale; in caso di cambio host non sono calibrazione
+  verificata. Nessuna modifica degli algoritmi legacy.
+- Test: t/integration/execution_service.t per FIFO, lock, isolamento DB,
+  annullamento, riprogrammazione Minion, worker interrotto e target cambiato;
+  t/integration/validation_window.t per rifiuti preventivi senza scritture.

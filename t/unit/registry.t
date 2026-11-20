@@ -56,4 +56,17 @@ procedures:
   - {code: bad, name: Bad, handler_class: ScriptManager::Command::Missing, execution_mode: sync, timeout_seconds: 5}
 YAML
 
+like load_yaml(<<'YAML'), qr/queue_by_database richiede async e parametro database/, 'database queue needs async mode';
+procedures:
+  - code: bad
+    name: Bad
+    handler_class: ScriptManager::Command::Example
+    execution_mode: sync
+    timeout_seconds: 5
+    queue_by_database: true
+    parameter_schema:
+      properties:
+        database: {type: string}
+YAML
+
 done_testing;

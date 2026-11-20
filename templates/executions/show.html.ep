@@ -5,6 +5,13 @@
 <dl class="details">
   <dt>Identificatore</dt><dd><code><%= $execution->{id} %></code></dd>
   <dt>Stato</dt><dd><span class="status <%= $execution->{status} %>"><%= $execution->{status} %></span></dd>
+% if (defined $execution->{queue_target}) {
+  <dt>Coda database</dt><dd><%= $execution->{parameters}{database} %>
+%   if (defined $execution->{queue_position}) {
+    - posizione <%= $execution->{queue_position} %> (include l'eventuale richiesta in corso)
+%   }
+  </dd>
+% }
   <dt>Avanzamento</dt>
   <dd>
 % if (defined $execution->{progress} && $execution->{status} ne 'queued') {

@@ -110,3 +110,14 @@ create table weather_days (
 -- 4 down
 drop table if exists weather_days;
 drop table if exists weather_api_calls;
+
+-- 5 up
+alter table executions add column queue_target text;
+alter table executions add column queue_order bigserial;
+create index executions_target_queue_idx on executions(queue_target, queue_order)
+  where status in ('queued', 'running', 'cancel_requested');
+
+-- 5 down
+drop index if exists executions_target_queue_idx;
+alter table executions drop column queue_order;
+alter table executions drop column queue_target;
