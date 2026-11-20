@@ -167,6 +167,16 @@ rieseguire un'elaborazione interrotta. La coda condivisa dei comandi 02-10
 serializza le richieste sullo stesso database; script legacy e processi
 esterni non partecipano, da non avviare contemporaneamente.
 
+Con Sovrascrivi, il reset di 04 azzera insieme A_m, Z_m, hmod e validation
+delle battute in lotti di massimo 500 tracce, tramite gli indici esistenti
+su battute.flay_id: evita i tre UPDATE con JOIN che possono scandire tutta
+la tabella battute anche per intervalli brevi. Non riscrive battute con tutti
+questi campi gia NULL. Giorni, esclusioni e risultati restano invariati;
+H_m non viene modificato. Il dettaglio del salvataggio mostra il lotto in
+corso al 50%, senza simulare una percentuale temporale. Il reset degli
+stati/date/pista/SID segue quello delle battute. Restano AutoCommit e
+possibili scritture parziali; nessun nuovo indice o modifica allo schema radar.
+
 ### Coda per database e controllo preventivo della durata
 
 Le richieste web/API/CLI delle fasi **02-10** entrano in una coda FIFO

@@ -191,6 +191,16 @@ procedure eseguibili dell'applicazione.
   in gruppi di massimo 500 ID, tracce, date), riepilogo 99%, concluso 100%
   solo dopo chiusura connessione. AutoCommit mantiene i limiti del legacy:
   nessun rollback delle scritture parziali.
+- Ottimizzazione reset 04 con Sovrascrivi: selezione delle sole tracce
+  ammesse nei giorni elaborati, poi un unico UPDATE per lotto di massimo
+  500 flay_id azzera A_m/Z_m/hmod/validation. Usa gli indici esistenti
+  su battute.flay_id anziche tre UPDATE JOIN con possibile scansione completa;
+  battute gia tutte NULL non riscritte. H_m, scope e filtri invariati.
+  Dettaglio del lotto corrente al 50%, cancellazione verificata fra lotti;
+  reset stati/date/pista/SID successivo, sempre senza rollback.
+  Test unitario dei lotti e confronto dei risultati MyISAM su 501 tracce
+  con esclusioni, date limite e battute fuori giorno in
+  t/unit/validation_window.t e t/integration/validation_window.t.
 - Controllo preventivo aggiunto a 04: prima di reset/scritture, conteggio
   delle battute nello scope effettivo e campionamento dell'algoritmo reale
   per operazione A/D e numerosita (minimo, mediana, massimo del gruppo).

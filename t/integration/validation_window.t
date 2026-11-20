@@ -67,7 +67,8 @@ $admin->do(q{
 $admin->do(q{
     CREATE TABLE battute (
       row_id INT PRIMARY KEY AUTO_INCREMENT, flay_id INT, time_italy DATETIME,
-      X_m DOUBLE, Y_m DOUBLE, H_m DOUBLE, validation CHAR(1), Z_m DOUBLE, hmod CHAR(1), A_m DOUBLE
+      X_m DOUBLE, Y_m DOUBLE, H_m DOUBLE, validation CHAR(1), Z_m DOUBLE, hmod CHAR(1), A_m DOUBLE,
+      KEY k_flay (flay_id)
     ) ENGINE=MyISAM
 });
 for my $id (1 .. 8) {
@@ -462,6 +463,51 @@ subtest '03-06 e 08: overwrite elimina A_m da bt=3 e invalida 10 sulle date effe
         $admin->do('DELETE FROM flay WHERE row_id=?', undef, $id);
         $id++;
     }
+};
+
+subtest '04: reset a piu lotti equivalente al precedente, con esclusioni e quote preservate' => sub {
+    my %included = map { $_ => 1 } 2000 .. 2500;
+    for my $id (2000 .. 2500, 2600 .. 2605) {
+        my $day = $id == 2603 ? undef : $id == 2604 ? '2026-11-30 23:59:59'
+            : $id == 2605 ? '2026-12-02 00:00:00' : '2026-12-01 12:00:00';
+        my $flag = $id == 2600 ? 'N' : $id == 2601 ? 'M' : $id == 2602 ? undef
+            : (qw(Y L D P))[$id % 4];
+        $admin->do(q{INSERT INTO flay
+            (row_id, flay_operation, data_ora_italy, data_ora_arr, validation_fl, validation_bt, pista, sid)
+            VALUES (?, 'D', ?, '2026-12-03 12:00:00', ?, 3, '11', 'KEEP')}, undef, $id, $day, $flag);
+        $admin->do(q{INSERT INTO battute (flay_id, time_italy, H_m, validation, A_m, Z_m, hmod)
+            VALUES (?, '2026-12-04 12:00:00', 300, 'N', 555, 400, 'M'), (?, NULL, 200, NULL, NULL, NULL, NULL)},
+            undef, $id, $id);
+    }
+    my $track_sql = 'SELECT row_id, validation_fl, validation_bt, data_ora_arr, pista, sid FROM flay ORDER BY row_id';
+    my $hit_sql = 'SELECT row_id, flay_id, H_m, A_m, Z_m, hmod, validation FROM battute ORDER BY row_id';
+    my $expected_tracks = $admin->selectall_arrayref($track_sql);
+    my $expected_hits = $admin->selectall_arrayref($hit_sql);
+    for my $row (@$expected_tracks) {
+        @$row[1 .. 5] = ('Y', undef, undef, undef, undef) if $included{$row->[0]};
+    }
+    for my $row (@$expected_hits) {
+        @$row[3 .. 6] = (undef, undef, undef, undef) if $included{$row->[1]};
+    }
+    my $id = $repo->create_execution(procedure_code => 'test_sum', requested_by => 'reset-test');
+    $repo->mark_running($id);
+    my $ctx = ScriptManager::Service::Context->new(
+        execution_id => $id, repo => $repo, logger => Log::Any->get_logger);
+    my $scope = ScriptManager::Service::ValidationWindow->new(db => $admin, ctx => $ctx, stage => 4,
+        params => {database => $schema, date_from => '2026-12-01', date_to => '2026-12-01',
+            overwrite => 1})->prepare;
+    $scope->start_saving;
+    is_deeply $admin->selectall_arrayref($track_sql), $expected_tracks,
+        'stati, date, pista e SID: scope identico, escluse M/N/NULL e date esterne o mancanti';
+    is_deeply $admin->selectall_arrayref($hit_sql), $expected_hits,
+        'tutte le battute delle 501 tracce azzerate, anche N e fuori giorno; H_m e altre tracce intatte';
+    is_deeply [map { $_->{message} } grep { $_->{message} =~ /azzeramento battute, tracce/ }
+        @{$repo->list_events($id)}], [
+            'Salvataggio: azzeramento battute, tracce 1-500 di 501: 50%',
+            'Salvataggio: azzeramento battute, tracce 501-501 di 501: 50%',
+        ], 'dettaglio persistente per entrambi i lotti';
+    $repo->mark_finished($id, status => 'completed', exit_code => 0);
+    $ctx->validation_guard(undef);
 };
 
 subtest 'form web: due selettori data e sovrascrittura non preselezionata' => sub {

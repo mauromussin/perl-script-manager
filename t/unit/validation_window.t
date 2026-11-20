@@ -61,13 +61,22 @@ subtest 'controlli web API e CLI condivisi dai comandi di validazione' => sub {
     has repo => sub { WindowRepository->new };
     has [qw(validation_guard execution_id)];
     has events => sub { [] };
-    sub check_cancel ($self) { }
+    has progress_steps => sub { [] };
+    has cancel_at => 0;
+    has checks => 0;
+    sub check_cancel ($self) {
+        $self->checks($self->checks + 1);
+        ScriptManager::Exception->throw('cancelled', 'Esecuzione annullata')
+            if $self->cancel_at && $self->checks == $self->cancel_at;
+    }
     sub log ($self, @args) { push @{$self->events}, \@args }
+    sub progress ($self, @args) { push @{$self->progress_steps}, \@args }
 }
 {
     package WindowDatabase;
     use Mojo::Base -base, -signatures;
     has queries => sub { [] };
+    has track_ids => sub { [1 .. 501] };
     sub selectrow_array ($self, $sql, @bind) {
         push @{$self->queries}, [$sql, @bind];
         return 2;
@@ -75,6 +84,7 @@ subtest 'controlli web API e CLI condivisi dai comandi di validazione' => sub {
     sub selectcol_arrayref ($self, $sql, @bind) {
         push @{$self->queries}, [$sql, @bind];
         return [] if $sql =~ /HAVING/;
+        return $self->track_ids if $sql =~ /^SELECT f.row_id FROM flay/;
         return ['2026-11-01', '2026-11-02'];
     }
     sub do ($self, $sql, @bind) { push @{$self->queries}, [$sql, @bind]; return 1 }
@@ -125,6 +135,36 @@ subtest 'skip giornaliero, filtro e invalidazione delle sole dipendenze' => sub 
     }
     my $scope = ScriptManager::Service::ValidationWindow->new;
     is_deeply [$scope->filter], [' AND 1 = 0'], 'nessun giorno non diventa intero database';
+};
+
+subtest '04 azzera insieme i campi dipendenti a lotti indicizzati, anche senza tracce' => sub {
+    local $ENV{MYSQL_HOST} = 'mysql.test';
+    for my $ids ([1 .. 501], []) {
+        my $db = WindowDatabase->new(track_ids => $ids);
+        my $ctx = WindowContext->new;
+        my $scope = ScriptManager::Service::ValidationWindow->new(db => $db, ctx => $ctx, stage => 4,
+            params => {database => 'radar_test', overwrite => true})->prepare;
+        $scope->start_saving;
+        my @resets = grep { $_->[0] =~ /^UPDATE battute/ } @{$db->queries};
+        is scalar @resets, @$ids ? 2 : 0, 'un solo reset battute per lotto, nessun UPDATE senza tracce';
+        if (@$ids) {
+            is_deeply [@{$resets[0]}[2 .. $#{$resets[0]}]], [1 .. 500], 'primo lotto di 500 tracce';
+            is_deeply [@{$resets[1]}[2 .. $#{$resets[1]}]], [501], 'ultimo lotto parziale';
+            like $resets[0][0], qr/SET A_m = NULL, Z_m = NULL, hmod = NULL, validation = NULL/,
+                'quote e classificazioni azzerate con lo stesso UPDATE';
+            unlike $resets[0][0], qr/JOIN|DATE\(/, 'nessun join o funzione sulla data nel reset delle battute';
+            is_deeply [map { $_->[0] } @{$ctx->progress_steps}], [50, 50, 50],
+                'avanza il dettaglio del reset senza anticipare la percentuale del salvataggio';
+        }
+    }
+    my $db = WindowDatabase->new;
+    my $ctx = WindowContext->new(cancel_at => 3);
+    my $scope = ScriptManager::Service::ValidationWindow->new(db => $db, ctx => $ctx, stage => 4,
+        params => {database => 'radar_test', overwrite => true})->prepare;
+    eval { $scope->start_saving };
+    ok(ScriptManager::Exception->caught($@, 'cancelled'), 'cancellazione fra i lotti propagata');
+    my @writes = grep { $_->[0] =~ /^UPDATE/ } @{$db->queries};
+    is scalar @writes, 1, 'nessun secondo lotto ne reset degli stati dopo la cancellazione';
 };
 
 subtest '10 non registra completi i giorni con tracce saltate' => sub {
