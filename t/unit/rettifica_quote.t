@@ -7,6 +7,12 @@ use TestValidationWindow;
 use ScriptManager::Command::RettificaQuote;
 
 {
+    package HeightNoPreflight;
+    use Mojo::Base -base, -signatures;
+    sub check ($self, @args) { }
+    sub check_saving ($self, @args) { }
+}
+{
     package HeightLegacyStatement;
     use Mojo::Base -base, -signatures;
     has [qw(db sql rows)];
@@ -157,19 +163,21 @@ subtest 'runtime: progresso completo, errori e annullamento senza falso successo
     local @ENV{qw(MYSQL_HOST MYSQL_USER MYSQL_PASSWORD)} = ('mysql.test', 'test', 'test');
     my $run = sub ($db, $ctx) {
         return ScriptManager::Command::RettificaQuote->new(connect_db => sub { $db },
-            window_class => 'TestValidationWindow')->run($ctx, {database => 'radar_test'});
+            window_class => 'TestValidationWindow', preflight => HeightNoPreflight->new)->run($ctx, {database => 'radar_test'});
     };
     my $db = HeightDatabase->new;
     my $ctx = HeightContext->new;
     my $r = $run->($db, $ctx);
     is_deeply [@{$r->{data}}{qw(tracks interpolated copied skipped_tracks)}], [1, 1, 2, 0];
-    is scalar @{$db->writes}, 4, 'tre quote e un aggiornamento di stato';
-    is_deeply $db->writes->[1], [
-        'UPDATE battute SET Z_m = ?, hmod = ? WHERE row_id = ? AND flay_id = ?', undef, 200, 'M', 2, 1],
+    is scalar @{$db->writes}, 2, 'tre quote aggiornate in un lotto e un aggiornamento di stato';
+    like $db->writes->[0][0], qr/WHERE flay_id = \? AND row_id IN \(\?,\?,\?\)/,
         'quote parametrizzate e confinate alla traccia';
+    is_deeply [@{$db->writes->[0]}[2 .. $#{$db->writes->[0]}]],
+        [1, 100, 2, 200, 3, 300, 1, undef, 2, 'M', 3, undef, 1, 1, 2, 3],
+        'valori, flag e identificatori preservati';
     is_deeply $db->writes->[-1], [
         'UPDATE flay SET validation_bt = ? WHERE row_id = ?', undef, 2, 1], 'stato aggiornato dopo le battute';
-    is_deeply [map { $_->[0] } @{$ctx->steps}], [0, 50, 50, 62, 74, 86, 99, 99, 100];
+    is_deeply [map { $_->[0] } @{$ctx->steps}], [0, 50, 50, 86, 99, 99, 100];
     ok $db->closed, 'connessione chiusa';
     for my $case ('empty', 'allzero', 'fail', 'invalid', 'cancel') {
         $db = HeightDatabase->new;

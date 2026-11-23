@@ -1,6 +1,7 @@
 use Mojo::Base -strict, -signatures;
 use Test::More;
 use ScriptManager::Service::BattutePreflight;
+use ScriptManager::Service::RettificaPreflight;
 
 {
     package PreflightRepo;
@@ -8,6 +9,7 @@ use ScriptManager::Service::BattutePreflight;
     has events => sub { [{execution_id => 'previous', metadata => {
         operation => 'validation_saving', units => 1000, seconds => 10}}] };
     sub battute_timing_events ($self, @args) { return $self->events }
+    sub validation_timing_events ($self, @args) { return $self->events }
 }
 {
     package PreflightContext;
@@ -51,6 +53,10 @@ subtest 'storico legacy e misure strutturate: velocita piu prudenziale' => sub {
     push @$events, {metadata => {operation => 'validation_saving', units => 1000, seconds => 750}};
     is(ScriptManager::Service::BattutePreflight->saving_rate($events), 0.75);
     is(ScriptManager::Service::BattutePreflight->saving_rate([]), undef);
+    is(ScriptManager::Service::RettificaPreflight->saving_rate([
+        {execution_id => '08', time => 100, message => 'Salvataggio: quote Z_m, hmod e stati tracce'},
+        {execution_id => '08', time => 160, message => 'Salvataggio: 100 di 500 operazioni'},
+    ], 'rettifica_saving'), 0.6, 'interpreta le misure 08 precedenti ai batch');
 };
 
 subtest 'soglia esatta inclusiva e ricontrollo prima delle scritture' => sub {
@@ -94,6 +100,52 @@ subtest 'assenza storico blocca; intero intervallo gia saltato non richiede stim
     is $db->reads, 0, 'non tenta di stimare o scrivere con valori inventati';
     $check->check($db, $ctx, PreflightWindow->new(days => []), [], '', [], sub { die 'not called' });
     is $db->reads, 0, 'skip non esegue lavoro o richiede calibrazione';
+};
+
+{
+    package HeightPreflightDB;
+    use Mojo::Base -base, -signatures;
+    has reads => 0;
+    sub selectall_arrayref ($self, $sql, $attr, @bind) {
+        $self->reads($self->reads + 1);
+        splice @bind, -3;
+        return [map { [$_, 8] } @bind];
+    }
+}
+
+subtest '08: campionamento, soglia e storico assente con conferma' => sub {
+    my $ctx = PreflightContext->new(repo => PreflightRepo->new(events => []));
+    my $db = PreflightDB->new;
+    my $window = PreflightWindow->new;
+    my $check = ScriptManager::Service::RettificaPreflight->new;
+    eval { $check->check($db, $ctx, $window, [1], sub { die 'non campiona' }) };
+    ok(ScriptManager::Exception->caught($@, 'timeout_estimate_unavailable'), 'senza storico si ferma prima dei conteggi');
+    is $db->reads, 0;
+    $ctx->timeout_bypassed(1);
+    $check->check($db, $ctx, $window, [1], sub { die 'non campiona' });
+    ok grep({ $_->[1] =~ /durata sconosciuta/ } @{$ctx->logs}), 'conferma esplicita con durata sconosciuta';
+    $check->check_saving($ctx, 100000);
+    $ctx->timeout_bypassed(0);
+    $ctx->repo->events([{metadata => {operation => 'rettifica_saving', units => 1000, seconds => 100}}]);
+    $db = HeightPreflightDB->new;
+    my @sampled;
+    my @ids = (1 .. 501);
+    $check = ScriptManager::Service::RettificaPreflight->new;
+    my $estimate = $check->check($db, $ctx, $window, \@ids, sub ($id) {
+        push @sampled, $id;
+        return {updates => [[1, 200, undef]]};
+    });
+    is $db->reads, 2, 'conteggi indicizzati in lotti da 500 tracce';
+    is_deeply \@sampled, [1, 251, 501], 'campiona minimo, mediana e massimo del gruppo';
+    ok $estimate >= 200, 'stima include il costo delle operazioni e il margine 2x';
+    $ctx->timeout_seconds(1);
+    eval { $check->check_saving($ctx, 6) };
+    ok(ScriptManager::Exception->caught($@, 'timeout_estimate'), 'secondo controllo prima delle scritture');
+    $ctx->timeout_bypassed(1);
+    ok $check->check_saving($ctx, 6) > 1, 'override supera anche il secondo controllo';
+    $ctx->repo->events([]);
+    $check->check($db, $ctx, $window, [1], sub { die 'non campiona' });
+    is $check->check_saving($ctx, 100000), undef, 'una nuova richiesta senza storico non riusa la stima precedente';
 };
 
 done_testing;

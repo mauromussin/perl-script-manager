@@ -98,3 +98,14 @@ procedures:
       required: [database]
       properties:
         database: {type: string, pattern: '^[A-Za-z0-9_]{1,64}$'}
+  - code: rettifica_quote
+    name: 08 test timeout
+    handler_class: ScriptManager::Command::RettificaQuote
+    execution_mode: async
+    timeout_seconds: 1
+    queue_by_database: true
+    parameter_schema:
+      type: object
+      required: [database]
+      properties:
+        database: {type: string, pattern: '^[A-Za-z0-9_]{1,64}$'}

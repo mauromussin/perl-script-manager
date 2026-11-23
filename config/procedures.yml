@@ -162,6 +162,7 @@ procedures:
       Scrive Z_m e hmod senza alterare H_m; copia anche le quote originali non nulle.
       Date facoltative su data_ora_italy; salta i giorni gia completati salvo Sovrascrivi.
       AutoCommit: errori e annullamenti non annullano le scritture gia eseguite.
+      La stima preventiva puo richiedere conferma esplicita per continuare senza timeout.
     enabled: true
     handler_class: ScriptManager::Command::RettificaQuote
     queue_by_database: true

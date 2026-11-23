@@ -117,7 +117,7 @@ sub runway_candidates ($self, $alias = '') {
     return "(${p}validation_bt IN (1, 2, 3) OR (${p}validation_fl = 'P' AND ${p}validation_bt = 0 AND ${p}pista LIKE 'N%'))";
 }
 
-sub start_saving ($self) {
+sub start_saving ($self, $selected_tracks = undef) {
     return unless @{$self->days};
     $self->ctx->check_cancel;
     my @stages = $self->stage == 3 ? (3, 4, 5, 6) : $self->stage == 4 ? (4, 5, 6) : ($self->stage);
@@ -174,15 +174,33 @@ sub start_saving ($self) {
         $self->ctx->check_cancel;
         $self->ctx->progress(50, 'Salvataggio: azzeramento stati, date, pista e SID delle tracce');
     }
-    elsif ($self->stage <= 6 || $self->stage == 8) {
+    elsif ($self->stage == 8) {
+        my $ids = $selected_tracks // $db->selectcol_arrayref(
+            'SELECT f.row_id FROM flay f WHERE f.validation_bt IN (1, 2, 3) AND f.pista IS NOT NULL'
+            . $filter . ' ORDER BY f.row_id', undef, @bind);
+        for (my $offset = 0; $offset < @$ids; $offset += 500) {
+            $self->ctx->check_cancel;
+            my $last = $offset + 499 < $#$ids ? $offset + 499 : $#$ids;
+            my @batch = @$ids[$offset .. $last];
+            $self->ctx->progress(50, 'Salvataggio: azzeramento quote, tracce '
+                . ($offset + 1) . '-' . ($last + 1) . ' di ' . scalar(@$ids));
+            $db->do('UPDATE battute SET A_m = NULL, '
+                . q{Z_m = CASE WHEN validation NOT IN ('N','A','S') THEN NULL ELSE Z_m END, }
+                . q{hmod = CASE WHEN validation NOT IN ('N','A','S') THEN NULL ELSE hmod END }
+                . 'WHERE flay_id IN (' . join(',', ('?') x @batch) . ') '
+                . q{AND (A_m IS NOT NULL OR (validation NOT IN ('N','A','S') AND (Z_m IS NOT NULL OR hmod IS NOT NULL)))},
+                undef, @batch);
+        }
+        $self->ctx->check_cancel;
+    }
+    elsif ($self->stage <= 6) {
         my $eligible = $self->stage == 5 || $self->stage == 6 ? ' AND ' . $self->runway_candidates('f')
-            : $self->stage == 8 ? ' AND f.validation_bt IN (1, 2, 3) AND f.pista IS NOT NULL' : '';
+            : '';
         $db->do('UPDATE battute b JOIN flay f ON f.row_id = b.flay_id SET b.A_m = NULL '
             . "WHERE 1=1 $filter $eligible", undef, @bind);
         $self->ctx->check_cancel;
-        my $hits = $self->stage == 8 ? q{ AND b.validation NOT IN ('N','A','S')} : '';
         $db->do('UPDATE battute b JOIN flay f ON f.row_id = b.flay_id SET b.Z_m = NULL, b.hmod = NULL '
-            . "WHERE 1=1 $filter $eligible $hits", undef, @bind);
+            . "WHERE 1=1 $filter $eligible", undef, @bind);
         $self->ctx->check_cancel;
     }
     if ($self->stage <= 4) {

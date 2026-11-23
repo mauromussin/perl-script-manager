@@ -21,8 +21,8 @@ sub submit ($self, $code, $input, %o) {
     if (defined $o{timeout_bypass_from}) {
         $source = $self->repo->get_execution($o{timeout_bypass_from});
         ScriptManager::Exception->throw('timeout_bypass_not_allowed',
-            'Il bypass richiede una 04 bloccata dalla stima oltre il timeout')
-            unless $code eq 'valida_battute' && $self->can_bypass_timeout($source);
+            'Il bypass richiede una procedura bloccata dal controllo preventivo')
+            unless $self->can_bypass_timeout($source) && $code eq $source->{procedure_code};
         $input = $source->{parameters};
     }
     my $validator = $self->registry->validator($proc);
@@ -72,10 +72,14 @@ sub submit ($self, $code, $input, %o) {
 }
 
 sub can_bypass_timeout ($self, $exec) {
-    my $proc = $self->registry->get('valida_battute');
+    return 0 unless $exec;
+    my $code = $exec->{procedure_code} // '';
+    return 0 unless $code eq 'valida_battute' || $code eq 'rettifica_quote';
+    my $proc = $self->registry->get($code);
     return $exec && $proc && $proc->{queue_by_database}
-        && $exec->{procedure_code} eq 'valida_battute' && $exec->{status} eq 'failed'
-        && ($exec->{error_code} // '') eq 'timeout_estimate' && !$exec->{timeout_bypassed} ? 1 : 0;
+        && $exec->{status} eq 'failed' && !$exec->{timeout_bypassed}
+        && (($exec->{error_code} // '') eq 'timeout_estimate'
+            || ($code eq 'rettifica_quote' && ($exec->{error_code} // '') eq 'timeout_estimate_unavailable')) ? 1 : 0;
 }
 
 sub execute ($self, $id, $params = undef) {
@@ -102,7 +106,8 @@ sub execute ($self, $id, $params = undef) {
     my $execution_guard = $self->repo->lock_execution($id) or return;
     return unless $self->repo->mark_running($id);
 
-    my $bypassed = $exec->{procedure_code} eq 'valida_battute' && $exec->{timeout_bypassed};
+    my $bypassed = ($exec->{procedure_code} eq 'valida_battute' || $exec->{procedure_code} eq 'rettifica_quote')
+        && $exec->{timeout_bypassed};
     my $ctx = ScriptManager::Service::Context->new(
         execution_id   => $id,
         repo           => $self->repo,

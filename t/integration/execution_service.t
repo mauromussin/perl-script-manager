@@ -431,6 +431,36 @@ subtest '04: conferma oltre stima disattiva il timeout reale solo per la nuova r
     ok(ScriptManager::Exception->caught($@, 'timeout_bypass_not_allowed'), 'storico assente non aggirato');
 };
 
+subtest '08: conferma senza storico elimina timeout reale, non la cancellazione' => sub {
+    local $ENV{MYSQL_HOST} = 'mysql.test';
+    my $app = TestHelper::mojo()->app;
+    my $svc = $app->execution_service;
+    my $repository = $app->repo;
+    my $source = $svc->submit(rettifica_quote => {database => 'height_timeout'})->{id};
+    $repository->mark_finished($source, status => 'failed', exit_code => 1,
+        error_code => 'timeout_estimate_unavailable');
+    my $id = $svc->submit(rettifica_quote => {}, timeout_bypass_from => $source)->{id};
+    my $cancel_run = 0;
+    no warnings qw(redefine once);
+    local *ScriptManager::Command::RettificaQuote::run = sub {
+        my (undef, $ctx) = @_;
+        ok $ctx->timeout_bypassed, 'bypass nel contesto della sola 08 confermata';
+        Time::HiRes::sleep(1.2);
+        $repository->request_cancel($ctx->execution_id) if $cancel_run;
+        $ctx->check_cancel;
+        return {success => 1, message => '08 completata'};
+    };
+    is $svc->execute($id), 'completed', 'supera il timeout configurato di 1 secondo';
+    my ($audit) = grep { ($_->{metadata}{operation} // '') eq 'timeout_bypass' } @{$repository->list_events($id)};
+    is $audit->{metadata}{source_execution_id}, $source, 'conferma tracciata';
+    my $head = $svc->submit(rettifica_quote => {database => 'height_timeout'})->{id};
+    my $retry = $svc->submit(rettifica_quote => {}, timeout_bypass_from => $source)->{id};
+    is $svc->execute($retry), 'queued', 'conferma rispetta la coda FIFO';
+    is $svc->cancel($head), 'cancelled';
+    $cancel_run = 1;
+    is $svc->execute($retry), 'cancelled', 'bypass non disattiva la cancellazione';
+};
+
 subtest 'controlli automatici nel worker e nella consultazione web/API' => sub {
     my $web = TestHelper::mojo();
     my $app = $web->app;

@@ -6,12 +6,13 @@ use Time::HiRes qw(clock_gettime CLOCK_MONOTONIC);
 use ScriptManager::Exception;
 
 has 'seconds_per_operation';
+has stage_label => '04';
 
-sub saving_rate ($class, $events) {
+sub saving_rate ($class, $events, $operation = 'validation_saving') {
     my (%previous, @rates);
     for my $event (@$events) {
         my $meta = $event->{metadata} // {};
-        if (($meta->{operation} // '') eq 'validation_saving') {
+        if (($meta->{operation} // '') eq $operation) {
             push @rates, $meta->{seconds} / $meta->{units}
                 if ($meta->{units} // 0) >= 10 && ($meta->{seconds} // 0) > 0;
             next;
@@ -19,6 +20,7 @@ sub saving_rate ($class, $events) {
         my $message = $event->{message} // '';
         my ($units) = $message =~ /(?:\(|Salvataggio: )(\d+) di \d+ operazioni/;
         $units = 0 if $message =~ /\ASalvataggio: classificazioni delle battute e delle tracce/;
+        $units = 0 if $message =~ /\ASalvataggio: quote Z_m, hmod e stati tracce/;
         next unless defined $units;
         my $prior = $previous{$event->{execution_id}};
         if ($prior && $units - $prior->[0] >= 10 && $event->{time} > $prior->[1]) {
@@ -32,14 +34,14 @@ sub saving_rate ($class, $events) {
 sub ensure_budget ($self, $ctx, $analysis, $operations) {
     my $estimate = $ctx->elapsed_seconds + 2 * ($analysis + $operations * $self->seconds_per_operation);
     $ctx->log(info => sprintf(
-        'Stima preventiva 04: %.1f secondi totali, timeout %d; margine 2x, non garanzia di durata',
-        $estimate, $ctx->timeout_seconds), operation => 'duration_estimate',
+        'Stima preventiva %s: %.1f secondi totali, timeout %d; margine 2x, non garanzia di durata',
+        $self->stage_label, $estimate, $ctx->timeout_seconds), operation => 'duration_estimate',
         estimated_seconds => $estimate, timeout_seconds => $ctx->timeout_seconds,
         timeout_bypassed => $ctx->timeout_bypassed ? 1 : 0);
     ScriptManager::Exception->throw('timeout_estimate', sprintf(
-        'Durata stimata 04 %.0f secondi superiore al timeout di %d secondi. Nessuna scrittura radar eseguita; '
+        'Durata stimata %s %.0f secondi superiore al timeout di %d secondi. Nessuna scrittura radar eseguita; '
         . 'confermare la riesecuzione senza timeout nella pagina di dettaglio oppure ridurre l intervallo di date.',
-        $estimate, $ctx->timeout_seconds)) if $estimate > $ctx->timeout_seconds && !$ctx->timeout_bypassed;
+        $self->stage_label, $estimate, $ctx->timeout_seconds)) if $estimate > $ctx->timeout_seconds && !$ctx->timeout_bypassed;
     $ctx->log(warning => 'Stima oltre il limite configurato: prosecuzione senza timeout con conferma utente')
         if $estimate > $ctx->timeout_seconds && $ctx->timeout_bypassed;
     return $estimate;

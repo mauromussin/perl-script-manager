@@ -167,6 +167,19 @@ subtest '04 azzera insieme i campi dipendenti a lotti indicizzati, anche senza t
     is scalar @writes, 1, 'nessun secondo lotto ne reset degli stati dopo la cancellazione';
 };
 
+subtest '08 usa le tracce selezionate e azzera in lotti da 500' => sub {
+    local $ENV{MYSQL_HOST} = 'mysql.test';
+    my $db = WindowDatabase->new;
+    my $ctx = WindowContext->new;
+    my $scope = ScriptManager::Service::ValidationWindow->new(db => $db, ctx => $ctx, stage => 8,
+        params => {database => 'radar_test', overwrite => true})->prepare;
+    $scope->start_saving([1 .. 501]);
+    my @resets = grep { $_->[0] =~ /^UPDATE battute/ } @{$db->queries};
+    is scalar @resets, 2, 'due UPDATE per 501 tracce';
+    is_deeply [@{$resets[0]}[2 .. $#{$resets[0]}]], [1 .. 500];
+    is_deeply [@{$resets[1]}[2 .. $#{$resets[1]}]], [501];
+};
+
 subtest '10 non registra completi i giorni con tracce saltate' => sub {
     local $ENV{MYSQL_HOST} = 'mysql.test';
     my $ctx = WindowContext->new;

@@ -5,7 +5,7 @@ use Mojo::Base -base, -signatures;
 sub prepare ($self) { return $self }
 sub filter ($self, @args) { return ('') }
 sub overwrite ($self) { return 0 }
-sub start_saving ($self) { }
+sub start_saving ($self, @args) { }
 sub finish ($self, $result) { return $result }
 
 1;

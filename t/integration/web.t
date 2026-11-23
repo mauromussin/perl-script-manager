@@ -156,4 +156,30 @@ subtest '04: conferma esplicita e CSRF prima della riesecuzione senza timeout' =
     $t->get_ok("/executions/$source")->status_is(200)->element_exists_not('input[name=confirm_timeout_bypass]');
 };
 
+subtest '08: conferma per stima eccessiva o assente, con stessa coda e parametri' => sub {
+    local $ENV{MYSQL_HOST} = 'mysql.test';
+    local $ENV{MYSQL_PORT} = 3306;
+    my $service = $t->app->execution_service;
+    my $repo = $t->app->repo;
+    for my $error (qw(timeout_estimate timeout_estimate_unavailable)) {
+        my $source = $service->submit(rettifica_quote => {database => 'height_web',
+            date_from => '2026-09-01', date_to => '2026-09-30', overwrite => Mojo::JSON::true})->{id};
+        $repo->mark_finished($source, status => 'failed', exit_code => 1, error_code => $error);
+        my $url = "/executions/$source/retry-without-timeout";
+        $t->get_ok("/executions/$source")->status_is(200)
+            ->element_exists('input[name=confirm_timeout_bypass][required]');
+        $t->content_like(qr/Durata non stimabile/) if $error eq 'timeout_estimate_unavailable';
+        my $token = csrf();
+        $t->post_ok($url => form => {confirm_timeout_bypass => 1})->status_is(403);
+        $t->post_ok($url => form => {csrf_token => $token})->status_is(422);
+        $t->post_ok($url => form => {csrf_token => $token, confirm_timeout_bypass => 1})->status_is(302);
+        my ($retry) = $t->tx->res->headers->location =~ m{/executions/([0-9a-f-]+)};
+        my $e = $repo->get_execution($retry);
+        is $e->{procedure_code}, 'rettifica_quote', 'riesegue 08 e non 04';
+        ok $e->{timeout_bypassed}, 'scelta persistita';
+        is $e->{queue_target}, $repo->get_execution($source)->{queue_target}, 'stesso target di coda';
+        is_deeply $e->{parameters}, $repo->get_execution($source)->{parameters}, 'parametri invariati';
+    }
+};
+
 done_testing;

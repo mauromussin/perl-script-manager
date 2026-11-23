@@ -6,10 +6,13 @@ use POSIX 'isfinite';
 use Scalar::Util 'looks_like_number';
 use ScriptManager::Exception;
 use ScriptManager::Service::ValidationWindow;
+use ScriptManager::Service::RettificaPreflight;
+use Time::HiRes qw(clock_gettime CLOCK_MONOTONIC);
 
 has [qw(logger process_runner)];
 has connect_db => sub { sub (@args) { DBI->connect(@args) } };
 has window_class => 'ScriptManager::Service::ValidationWindow';
+has preflight => sub { ScriptManager::Service::RettificaPreflight->new };
 
 sub configure_schema ($class, $schema, $directory) {
     ScriptManager::Service::ValidationWindow->configure_schema($schema);
@@ -20,7 +23,7 @@ sub analyze ($class, $hits, $ctx = undef) {
     return {updates => [], reason => 'meno di tre battute ammesse'} if @$hits < 3;
     my @anchors;
     for my $i (0 .. $#$hits) {
-        $ctx->check_cancel if $ctx;
+        $ctx->check_cancel if $ctx && $i % 128 == 0;
         for my $value (@{$hits->[$i]}[1 .. 3]) {
             ScriptManager::Exception->throw('invalid_hit', 'Coordinate o quota mancanti, non numeriche o non finite')
                 unless defined $value && looks_like_number($value) && isfinite($value);
@@ -31,7 +34,7 @@ sub analyze ($class, $hits, $ctx = undef) {
     my (@updates, @warnings, $interpolated, $copied, $cursor);
     ($interpolated, $copied, $cursor) = (0, 0, 0);
     for my $i (0 .. $#$hits) {
-        $ctx->check_cancel if $ctx;
+        $ctx->check_cancel if $ctx && $i % 128 == 0;
         my $hit = $hits->[$i];
         next if ($hit->[5] // '') eq 'M';
         if ($hit->[3] != 0) {
@@ -75,6 +78,14 @@ sub _distance ($a, $b) {
     return sqrt(($a->[1] - $b->[1]) ** 2 + ($a->[2] - $b->[2]) ** 2);
 }
 
+sub plan_track ($self, $db, $ctx, $window, $id) {
+    my $hits = $db->selectall_arrayref(
+        'SELECT row_id, X_m, Y_m, H_m, validation, hmod FROM battute WHERE flay_id = ? '
+        . 'AND validation NOT IN (?, ?, ?) ORDER BY time_italy, row_id', undef, $id, 'N', 'A', 'S');
+    if ($window->overwrite) { $_->[5] = undef for @$hits }
+    return __PACKAGE__->analyze($hits, $ctx);
+}
+
 sub run ($self, $ctx, $params) {
     ScriptManager::Service::ValidationWindow->validate_params($params);
     ScriptManager::Exception->throw('invalid_database', 'Nome database MySQL non valido')
@@ -103,6 +114,7 @@ sub run ($self, $ctx, $params) {
             'Connessione MySQL fallita: verificare host, porta, credenziali e database');
     }
     my ($result, $window);
+    my ($saving_started, $saved, $operations) = (undef, 0, 0);
     my $ok = eval {
         $window = $self->window_class->new(db => $db, ctx => $ctx, params => $params, stage => 8)->prepare;
         my ($filter, @bind) = $window->filter;
@@ -111,15 +123,13 @@ sub run ($self, $ctx, $params) {
         my $tracks = $db->selectcol_arrayref(
             'SELECT row_id FROM flay WHERE ' . ($window->overwrite ? 'validation_bt IN (1, 2, 3)' : 'validation_bt = 1')
             . ' AND pista IS NOT NULL' . $filter . ' ORDER BY row_id', undef, @bind);
-        my (@plans, $analyzed, $skipped, $operations, $interpolated, $copied, $last_analysis);
-        ($analyzed, $skipped, $operations, $interpolated, $copied, $last_analysis) = (0, 0, 0, 0, 0, 0);
+        $self->preflight->check($db, $ctx, $window, $tracks,
+            sub ($id) { $self->plan_track($db, $ctx, $window, $id) });
+        my (@plans, $analyzed, $skipped, $interpolated, $copied, $last_analysis);
+        ($analyzed, $skipped, $interpolated, $copied, $last_analysis) = (0, 0, 0, 0, 0);
         for my $id (@$tracks) {
             $ctx->check_cancel;
-            my $hits = $db->selectall_arrayref(
-                'SELECT row_id, X_m, Y_m, H_m, validation, hmod FROM battute WHERE flay_id = ? '
-                . 'AND validation NOT IN (?, ?, ?) ORDER BY time_italy, row_id', undef, $id, 'N', 'A', 'S');
-            if ($window->overwrite) { $_->[5] = undef for @$hits }
-            my $plan = __PACKAGE__->analyze($hits, $ctx);
+            my $plan = $self->plan_track($db, $ctx, $window, $id);
             if ($plan->{reason}) {
                 $skipped++;
                 $ctx->log(warning => "Traccia $id non rettificata: $plan->{reason}");
@@ -137,20 +147,30 @@ sub run ($self, $ctx, $params) {
                 if $percent != $last_analysis;
             $last_analysis = $percent;
         }
+        $self->preflight->check_saving($ctx, $operations);
         $ctx->progress(50, 'Salvataggio: quote Z_m, hmod e stati tracce');
-        $window->start_saving;
-        my ($saved, $last_percent) = (0, 50);
+        $saving_started = clock_gettime(CLOCK_MONOTONIC);
+        $window->start_saving($tracks);
+        my $last_percent = 50;
         my $advance = sub {
             my $percent = 50 + int(49 * $saved / $operations);
             $ctx->progress($percent, "Salvataggio: $saved di $operations operazioni") if $percent != $last_percent;
             $last_percent = $percent;
         };
         for my $plan (@plans) {
-            for my $update (@{$plan->{updates}}) {
+            my $updates = $plan->{updates};
+            for (my $offset = 0; $offset < @$updates; $offset += 200) {
                 $ctx->check_cancel;
-                $db->do('UPDATE battute SET Z_m = ?, hmod = ? WHERE row_id = ? AND flay_id = ?',
-                    undef, $update->[1], $update->[2], $update->[0], $plan->{id});
-                $saved++;
+                my $last = $offset + 199 < $#$updates ? $offset + 199 : $#$updates;
+                my @batch = @$updates[$offset .. $last];
+                my $cases = join(' ', ('WHEN ? THEN ?') x @batch);
+                my @z = map { ($_->[0], $_->[1]) } @batch;
+                my @hmod = map { ($_->[0], $_->[2]) } @batch;
+                my @ids = map { $_->[0] } @batch;
+                $db->do("UPDATE battute SET Z_m = CASE row_id $cases ELSE Z_m END, "
+                    . "hmod = CASE row_id $cases ELSE hmod END WHERE flay_id = ? AND row_id IN ("
+                    . join(',', ('?') x @ids) . ')', undef, @z, @hmod, $plan->{id}, @ids);
+                $saved += @batch;
                 $advance->();
             }
             $ctx->check_cancel;
@@ -174,6 +194,11 @@ sub run ($self, $ctx, $params) {
         1;
     };
     $error = $@;
+    if (defined $saving_started && $saved >= 10) {
+        $ctx->log(info => "Misura salvataggio 08: $saved operazioni logiche", operation => 'rettifica_saving',
+            units => $saved, seconds => clock_gettime(CLOCK_MONOTONIC) - $saving_started,
+            target => $window->target);
+    }
     unless ($ok) {
         $ctx->log(error => 'Rettifica quote interrotta; eventuali scritture gia eseguite non sono annullate');
         my $closed = eval { $db->disconnect; 1 };

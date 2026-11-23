@@ -97,6 +97,11 @@ my $calibration = $repo->create_execution(procedure_code => 'valida_battute',
 $repo->mark_finished($calibration, status => 'completed', exit_code => 0);
 $repo->add_event($calibration, 'info', 'Misura sintetica per i test', metadata => {
     operation => 'validation_saving', units => 1000, seconds => 1, target => $target});
+my $height_calibration = $repo->create_execution(procedure_code => 'rettifica_quote',
+    requested_by => 'synthetic-calibration', parameters => {database => $schema}, queue_target => $target);
+$repo->mark_finished($height_calibration, status => 'completed', exit_code => 0);
+$repo->add_event($height_calibration, 'info', 'Misura sintetica 08 per i test', metadata => {
+    operation => 'rettifica_saving', units => 1000, seconds => 1, target => $target});
 my $last_id;
 sub run_stage ($stage, %extra) {
     my $fail = delete $extra{fail_write};
@@ -391,12 +396,17 @@ subtest '08: arrivi e decolli, date locali, ordine, filtri battute e copia quote
     is_deeply days('rettifica_quote'), ['2026-11-10'];
     $r = run_stage(8, date_from => '2026-11-10', date_to => '2026-11-10');
     is_deeply $r->{data}{days_skipped}, ['2026-11-10'];
+    $admin->do('UPDATE battute SET A_m=123 WHERE flay_id IN (20, 24)');
     run_stage(8, date_from => '2026-11-10', date_to => '2026-11-10', overwrite => 1);
     is $admin->selectrow_array('SELECT Z_m FROM battute WHERE flay_id=25 AND H_m=0'), 200,
         'overwrite include bt=2 e ricalcola da H_m, non da Z_m';
     is $admin->selectrow_array('SELECT Z_m FROM battute WHERE flay_id=29 AND H_m=0'), 200;
     is $admin->selectrow_array('SELECT COUNT(*) FROM battute WHERE flay_id=20 AND Z_m=999'), 4,
         'overwrite non azzera battute escluse';
+    is $admin->selectrow_array('SELECT COUNT(*) FROM battute WHERE flay_id=20 AND A_m IS NOT NULL'), 0,
+        'A_m azzerato anche sulle battute con validation N/A/S/NULL';
+    is $admin->selectrow_array('SELECT COUNT(*) FROM battute WHERE flay_id=24 AND A_m=123'), 3,
+        'traccia M esclusa dal reset';
     is_deeply [@{track_state(20)}[0 .. 3]], ['Y', 2, '29', 'KEEP'];
 };
 
@@ -419,6 +429,49 @@ subtest '08: analisi prima del reset e recupero dopo scrittura fallita' => sub {
     run_stage(8, date_from => '2026-11-10', date_to => '2026-11-10', overwrite => 1);
     is $admin->selectrow_array('SELECT Z_m FROM battute WHERE flay_id=20 AND H_m=0 AND validation=?',
         undef, 'X'), 200;
+};
+
+subtest '08: stima assente o eccessiva non scrive ne invalida lo storico' => sub {
+    my $before_tracks = $admin->selectall_arrayref('SELECT * FROM flay ORDER BY row_id');
+    my $before_hits = $admin->selectall_arrayref('SELECT * FROM battute ORDER BY row_id');
+    my $days_before = days('rettifica_quote');
+    $repo->pg->db->query('delete from execution_events where execution_id = ?', $height_calibration);
+    for my $case (qw(missing slow)) {
+        if ($case eq 'slow') {
+            $repo->add_event($height_calibration, 'info', 'Misura sintetica lenta 08', metadata => {
+                operation => 'rettifica_saving', units => 1000, seconds => 3600000, target => $target});
+        }
+        eval { run_stage(8, date_from => '2026-11-10', date_to => '2026-11-10', overwrite => 1) };
+        ok(ScriptManager::Exception->caught($@,
+            $case eq 'missing' ? 'timeout_estimate_unavailable' : 'timeout_estimate'), "$case: rifiuto esplicito");
+        is_deeply $admin->selectall_arrayref('SELECT * FROM flay ORDER BY row_id'), $before_tracks;
+        is_deeply $admin->selectall_arrayref('SELECT * FROM battute ORDER BY row_id'), $before_hits;
+        is_deeply days('rettifica_quote'), $days_before, 'nessuna invalidazione preventiva';
+    }
+    $repo->pg->db->query('delete from execution_events where execution_id = ?', $height_calibration);
+    $repo->add_event($height_calibration, 'info', 'Misura sintetica ripristinata 08', metadata => {
+        operation => 'rettifica_saving', units => 1000, seconds => 1, target => $target});
+};
+
+subtest '08: salvataggio a piu lotti preserva quote e hmod su MyISAM' => sub {
+    $admin->do(q{INSERT INTO flay
+        (row_id, flay_operation, data_ora_italy, validation_fl, validation_bt, pista)
+        VALUES (80, 'A', '2026-12-10 12:00:00', 'Y', 1, '11')});
+    for my $i (0 .. 204) {
+        $admin->do(q{INSERT INTO battute (flay_id,time_italy,X_m,Y_m,H_m,validation)
+            VALUES (80, DATE_ADD('2026-12-10 12:00:00', INTERVAL ? SECOND), ?, 0, ?, 'Y')},
+            undef, $i, $i * 10, $i == 202 ? 0 : 100 + $i);
+    }
+    my $r = run_stage(8, date_from => '2026-12-10', date_to => '2026-12-10');
+    is $r->{data}{copied}, 204;
+    is $r->{data}{interpolated}, 1;
+    is $admin->selectrow_array(q{SELECT count(*) FROM battute WHERE flay_id=80 AND Z_m IS NOT NULL}), 205;
+    is_deeply $admin->selectrow_arrayref(q{SELECT H_m, Z_m, hmod FROM battute WHERE flay_id=80 AND H_m=0}),
+        [0, 302, 'M'], 'interpolazione corretta oltre il primo blocco';
+    is track_state(80)->[1], 2;
+    $repo->invalidate_validation_days($target, ['rettifica_quote'], ['2026-12-10']);
+    $admin->do('DELETE FROM battute WHERE flay_id=80');
+    $admin->do('DELETE FROM flay WHERE row_id=80');
 };
 
 subtest '03-06 invalidano 08 e gli overwrite ripristinano quote e stato ricalcolabile' => sub {

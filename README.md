@@ -248,8 +248,9 @@ Il preflight legge soltanto il database radar; log e misure sono salvati in
 PostgreSQL. La stima viene registrata nei log, non e una garanzia: carico,
 I/O e complessita delle tracce possono variare. Senza conferma esplicita il
 timeout reale resta attivo, includendo il preflight. Ne una stima favorevole
-ne il bypass rendono atomiche le scritture MyISAM. Gli altri comandi hanno
-la coda, non questo estimatore.
+ne il bypass rendono atomiche le scritture MyISAM. Anche 08 usa un preflight
+e una conferma analoghi, con la differenza indicata nella sua sezione; gli
+altri comandi hanno la coda, non questo estimatore.
 
 La migrazione PostgreSQL **5** aggiunge target e ordine persistenti alle
 esecuzioni, senza modifiche allo schema radar. Aggiornare app e worker
@@ -406,6 +407,25 @@ tracce interessate e invalida lo storico 10: rieseguire la normalizzazione.
 Analisi completa prima delle scritture; errori nei numerici interrompono
 prima dei reset. Nessuna nuova tabella nel database radar: sono richiesti
 i campi legacy `battute.Z_m` e `battute.hmod`.
+
+Prima delle scritture la 08 campiona l'analisi e stima il salvataggio usando
+le misure delle ultime dieci esecuzioni sullo stesso target negli ultimi
+90 giorni, con margine 2x; dopo l'analisi verifica di nuovo il budget. La
+stima e euristica, non garantisce la durata. Le vecchie misure precedenti
+all'ottimizzazione possono renderla molto prudenziale. Se la stima supera
+il timeout, il dettaglio offre la stessa conferma della 04 per una nuova
+richiesta in coda senza timeout. Se manca uno storico misurabile, la 08
+si ferma prima delle scritture e offre la conferma segnalando che la durata
+non e stimabile; diversamente, la 04 resta bloccata senza storico.
+Le vecchie 08 gia terminate per timeout vanno rilanciate normalmente per
+ottenere il preflight; possono aver lasciato scritture parziali.
+
+Il reset in Sovrascrivi e gli aggiornamenti delle quote sono raggruppati
+per ridurre le query; la 08 aggiorna righe esistenti, non ne inserisce.
+Resta AutoCommit: un'interruzione puo lasciare risultati parziali, ora
+alla granularita dei lotti. Nessuna riduzione della durata e garantita.
+Queste modifiche richiedono il deploy coordinato di app e worker, a worker
+fermi, prima di essere disponibili.
 
 ## Dati meteo orari Open-Meteo: 09
 

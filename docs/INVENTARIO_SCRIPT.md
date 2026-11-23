@@ -437,6 +437,16 @@ procedure eseguibili dell'applicazione.
   Quote originali copiate con hmod NULL; interpolate con M; tracce
   rettificabili avanzano a bt=2 solo dopo le rispettive scritture.
   Riepilogo persistente al posto del file legacy.
+- Preflight: campiona l'analisi e usa misure 08 dello stesso target, con
+  margine 2x e ulteriore controllo prima delle scritture. Stima euristica,
+  non garanzia; misure legacy possono sovrastimare dopo l'ottimizzazione.
+  Stima oltre timeout o storico insufficiente: nessuna scrittura radar,
+  conferma esplicita per nuova richiesta in coda senza timeout; nel secondo
+  caso durata non stimabile. La 04 mantiene il blocco se manca lo storico.
+- Prestazioni: reset overwrite e UPDATE delle quote raggruppati; nessun
+  inserimento di righe. AutoCommit invariato: interruzioni possono lasciare
+  risultati parziali per lotto. Nessun tempo operativo misurato garantito.
+  Disponibile solo dopo deploy coordinato di app e worker.
 - Overwrite: include bt=1/2/3 con pista, ricalcola da H_m ignorando
   hmod M; azzera solo Z_m/hmod delle battute ammesse, non N/A/S/NULL.
   Azzera anche A_m delle tracce interessate e invalida lo storico 10.

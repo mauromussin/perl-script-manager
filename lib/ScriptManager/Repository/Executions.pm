@@ -227,23 +227,27 @@ sub note_queue_wait ($self, $id) {
 }
 
 sub battute_timing_events ($self, $target, $exclude_id) {
+    return $self->validation_timing_events($target, $exclude_id, 'valida_battute', 'validation_saving');
+}
+
+sub validation_timing_events ($self, $target, $exclude_id, $code, $operation) {
     my ($database) = $target =~ /:([^:]+)\z/;
     return $self->pg->db->query(q{
         with recent as (
           select e.id from executions e join procedures p on p.id = e.procedure_id
-          where p.code = 'valida_battute' and e.id <> ?
+          where p.code = ? and e.id <> ?
             and e.requested_at >= now() - interval '90 days'
             and (e.queue_target = ? or (e.queue_target is null and e.parameters->>'database' = ?))
             and exists (select 1 from execution_events measured where measured.execution_id = e.id
               and (measured.message ~ 'Salvataggio:.*[0-9]+ di [0-9]+ operazioni'
-                or measured.metadata->>'operation' = 'validation_saving'))
+                or measured.metadata->>'operation' = ?))
           order by e.requested_at desc limit 10
         )
         select v.execution_id, extract(epoch from v.created_at) as time, v.message, v.metadata
         from recent e join execution_events v on v.execution_id = e.id
-        where v.message like 'Salvataggio:%' or v.metadata->>'operation' = 'validation_saving'
+        where v.message like 'Salvataggio:%' or v.metadata->>'operation' = ?
         order by v.execution_id, v.id
-    }, $exclude_id, $target, $database)->expand->hashes->to_array;
+    }, $code, $exclude_id, $target, $database, $operation, $operation)->expand->hashes->to_array;
 }
 
 sub list_executions ($self, %f) {
