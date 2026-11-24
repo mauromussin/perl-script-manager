@@ -149,3 +149,44 @@ procedures:
         files: {type: array, minItems: 1, uniqueItems: true, items: {type: string, minLength: 1}}
         hashes: {type: array, minItems: 1, items: {type: string, pattern: '^[a-f0-9]{64}$'}}
         stations: {type: array, minItems: 1, items: {type: string, pattern: '^[1-9][0-9]*:[0-9]+$'}}
+  - code: correla_eventi_cmp
+    name: 14 test correlazione
+    handler_class: ScriptManager::Command::CorrelaEventiCMP
+    execution_mode: async
+    timeout_seconds: 3600
+    queue_by_database: true
+    parameter_schema:
+      type: object
+      required: [database, airport, date_from, date_to, stations, confirm_parameters, confirm_replacement]
+      properties:
+        database: {type: string, pattern: '^[A-Za-z0-9_]{1,64}$'}
+        airport: {type: string, enum: [LIMC, LIML, LIME, LIPO]}
+        date_from: {type: string, format: date}
+        date_to: {type: string, format: date}
+        stations:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: {type: string, pattern: '^[1-9][0-9]*:[0-9]+:-?[0-9]+:-?[0-9]+:-?[0-9]+:[0-9]+(\.[0-9]+)?$'}
+        confirm_parameters: {type: boolean, enum: [true]}
+        confirm_replacement: {type: boolean, enum: [true]}
+  - code: attualizza_correlazione_cmp
+    name: 14 test attualizzazione
+    ui_hidden: true
+    handler_class: ScriptManager::Command::AttualizzaCorrelazione
+    execution_mode: async
+    timeout_seconds: 3600
+    queue_by_database: true
+    parameter_schema:
+      type: object
+      required: [database, airport, source_execution_id, activations, confirm_activation]
+      properties:
+        database: {type: string, pattern: '^[A-Za-z0-9_]{1,64}$'}
+        airport: {type: string, enum: [LIMC, LIML, LIME, LIPO]}
+        source_execution_id: {type: string, pattern: '^[0-9a-fA-F-]{36}$'}
+        activations:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: {type: string, pattern: '^[1-9][0-9]*:[0-9]+:(lva|lvan)$'}
+        confirm_activation: {type: boolean, enum: [true]}

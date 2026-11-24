@@ -87,6 +87,9 @@
 % }
 
 <div class="actions">
+% if ($execution->{procedure_code} eq 'correla_eventi_cmp' && $execution->{status} eq 'completed') {
+  <a class="button" href="<%= url_for 'correlation_results', id => $execution->{id} %>">Verifica e attualizza LVA/LVAn</a>
+% }
 % if (!is_final($execution->{status}) && $execution->{status} ne 'cancel_requested') {
   <form method="post" action="<%= url_for 'execution_cancel', id => $execution->{id} %>">
     <%= csrf_field %>

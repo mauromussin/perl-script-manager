@@ -1,0 +1,107 @@
+% layout 'default';
+% title $procedure->{name};
+<h1><%= $procedure->{name} %></h1>
+<p><%= $procedure->{description} %></p>
+% if (@$errors) {
+<div class="alert" role="alert">
+  <strong>Impossibile procedere:</strong>
+  <ul>
+% for my $e (@$errors) {
+    <li><%= $e->{path} %> <%= $e->{message} %></li>
+% }
+  </ul>
+</div>
+% }
+<form method="get" action="<%= url_for 'procedure', code => $procedure->{code} %>" class="filters">
+  <label for="corr-airport">1. Aeroporto</label>
+  <select id="corr-airport" name="airport" required>
+    <option value="">Seleziona aeroporto</option>
+% for my $airport (qw(LIMC LIML LIME LIPO)) {
+    <option value="<%= $airport %>"<%= ($values->{airport} // '') eq $airport ? ' selected' : '' %>><%= $airport %></option>
+% }
+  </select>
+  <button type="submit">Cerca database</button>
+</form>
+% if ($databases) {
+<form method="get" action="<%= url_for 'procedure', code => $procedure->{code} %>" class="filters">
+  <input type="hidden" name="airport" value="<%= $values->{airport} %>">
+  <label for="corr-database">2. Database</label>
+  <select id="corr-database" name="database" required>
+    <option value="">Seleziona database</option>
+% for my $database (@$databases) {
+    <option value="<%= $database %>"<%= ($values->{database} // '') eq $database ? ' selected' : '' %>><%= $database %></option>
+% }
+  </select>
+  <button type="submit">Verifica stazioni e tabelle</button>
+</form>
+% if (!@$databases) {
+<p>Nessun database associato disponibile.</p>
+% }
+% }
+% if ($preview) {
+% if (@{$preview->{schema}{errors}}) {
+<div class="alert" role="alert"><strong>Schema incompatibile:</strong>
+  <ul>
+% for my $error (@{$preview->{schema}{errors}}) {
+    <li><%= $error %></li>
+% }
+  </ul>
+</div>
+% } elsif (@{$preview->{schema}{missing}}) {
+<div class="alert" role="alert">
+  <strong>Tabelle mancanti nel database <%= $values->{database} %>:</strong>
+  <%= join(', ', @{$preview->{schema}{missing}}) %>.
+  Saranno create vuote dalle strutture di bgy_2024_bruma; per st_lvan da bgy_2025_bruma.
+  La creazione modifica lo schema MySQL, non importa eventi e richiede la coda del database libera.
+  <form method="post" action="<%= url_for 'correlation_prepare' %>">
+    <%= csrf_field %>
+    <input type="hidden" name="airport" value="<%= $values->{airport} %>">
+    <input type="hidden" name="database" value="<%= $values->{database} %>">
+% for my $table (@{$preview->{schema}{missing}}) {
+    <input type="hidden" name="missing_table" value="<%= $table %>">
+% }
+    <label><input type="checkbox" name="confirm_schema" value="1" required> Confermo la creazione delle tabelle elencate</label>
+    <button type="submit">Crea tabelle mancanti</button>
+  </form>
+</div>
+% } elsif (!@{$preview->{stations}}) {
+<p>Nessuna stazione associata all'aeroporto.</p>
+% } else {
+% my %selected;
+% for my $item (@{ref $values->{stations} eq 'ARRAY' ? $values->{stations} : []}) {
+%   my ($id, $code, $shift, $mti, $mta, $mdi) = split /:/, $item, 6;
+%   $selected{"$id:$code"} = {shift => $shift, mti => $mti, mta => $mta, mdi => $mdi} if defined $mdi;
+% }
+<p>3. Seleziona le stazioni e verifica i parametri. Le modifiche di una correlazione completata diventano i successivi default della stazione.</p>
+<p>La condizione aggiuntiva <code>cond</code> e una clausola WHERE SQL: non e utilizzabile in questa versione.</p>
+<form method="post" action="<%= url_for 'procedure_run', code => $procedure->{code} %>">
+  <%= csrf_field %>
+  <input type="hidden" name="airport" value="<%= $values->{airport} %>">
+  <input type="hidden" name="database" value="<%= $values->{database} %>">
+  <label>Dal giorno <input type="date" name="date_from" required value="<%= $values->{date_from} // '' %>"></label>
+  <label>Al giorno <input type="date" name="date_to" required value="<%= $values->{date_to} // '' %>"></label>
+  <table>
+    <thead><tr><th>Stazione</th><th>Shift (s)</th><th>Limite iniziale (s)</th><th>Limite finale (s)</th><th>Distanza massima (m)</th></tr></thead>
+    <tbody>
+% for my $station (@{$preview->{stations}}) {
+%   my $id = $station->{row_id};
+%   my $code = $station->{c_cab} // '';
+%   my $key = "$id:$code";
+%   my $defaults = $selected{$key} // $station->{defaults};
+    <tr>
+      <td><label><input type="checkbox" name="selected_station" value="<%= $key %>"<%= exists $selected{$key} ? ' checked' : '' %><%= $code =~ /^\d+$/ ? '' : ' disabled' %>> <%= $station->{nome} %> (<%= $code %>)</label></td>
+%   for my $field (qw(shift mti mta mdi)) {
+      <td><input type="number" step="<%= $field eq 'mdi' ? 'any' : '1' %>" name="<%= $field . '_' . $id %>" value="<%= $defaults->{$field} %>" aria-label="<%= $field %> per <%= $station->{nome} %>"></td>
+%   }
+    </tr>
+% }
+    </tbody>
+  </table>
+  <p>La sostituzione elimina le correlazioni esistenti nel periodo per le stazioni selezionate, per tutti gli shift.
+    Con MyISAM, errori o interruzioni possono lasciare dati parziali.</p>
+  <label><input type="checkbox" name="confirm_parameters" value="1" required> Confermo i parametri indicati</label>
+  <label><input type="checkbox" name="confirm_replacement" value="1" required> Confermo la sostituzione delle correlazioni esistenti</label>
+  <button type="submit">Avvia correlazione</button>
+</form>
+% }
+% }

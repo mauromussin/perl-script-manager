@@ -4,6 +4,8 @@ use Mojo::Base 'Mojolicious::Controller', -signatures;
 use Mojo::File 'path';
 use ScriptManager::Controller::Catalog ();
 use ScriptManager::Exception;
+use ScriptManager::Service::CorrelazioneSetup;
+use ScriptManager::Service::CorrelazioneReview;
 
 my @STATUSES = qw(queued running completed failed cancel_requested cancelled timed_out);
 
@@ -13,11 +15,15 @@ sub create ($c) {
 
     my $proc = $c->registry->get($c->param('code')) or return $c->reply->not_found;
     my $validator = $c->registry->validator($proc);
-    my $input     = $validator->from_form($c->req->body_params);
+    my $input     = $proc->{code} eq 'correla_eventi_cmp'
+        ? ScriptManager::Service::CorrelazioneSetup->new->form_input($c->req->body_params)
+        : $validator->from_form($c->req->body_params);
     my $result    = $c->execution_service->submit($proc->{code}, $input, requested_by => $c->current_user);
 
     return ScriptManager::Controller::Catalog::render_eventi($c, $proc, $input, $result->{errors})
         if $result->{errors} && $proc->{code} eq 'carica_eventi_cmp';
+    return ScriptManager::Controller::Catalog::render_correlation($c, $proc, $input, $result->{errors})
+        if $result->{errors} && $proc->{code} eq 'correla_eventi_cmp';
     return $c->render(
         'catalog/show',
         procedure => $proc,
@@ -68,6 +74,49 @@ sub show ($c) {
         refresh   => $final ? 0 : 2,
         can_bypass_timeout => $c->execution_service->can_bypass_timeout($exec),
     );
+}
+
+sub correlation_results ($c) {
+    my $review = ScriptManager::Service::CorrelazioneReview->new(repo => $c->repo);
+    my ($execution, $results);
+    my $ok = eval {
+        my $references;
+        ($execution, $references) = $review->source($c->param('id'));
+        $results = $review->results($execution, $references);
+        1;
+    };
+    unless ($ok) {
+        my $error = $@;
+        $c->app->log->error("Consultazione risultati correlazione fallita: $error");
+        my $message = ScriptManager::Exception->caught($error) ? $error->message
+            : 'Risultati non disponibili; consultare i log applicativi';
+        return $c->render(text => $message, status => 422);
+    }
+    return $c->render('executions/correlation_results', execution => $execution, results => $results, errors => []);
+}
+
+sub correlation_activate ($c) {
+    return $c->render(text => 'Token CSRF non valido', status => 403)
+        if $c->validation->csrf_protect->has_error('csrf_token');
+    return $c->render(text => 'Confermare esplicitamente l attualizzazione', status => 422)
+        unless ($c->param('confirm_activation') // '') eq '1';
+    my $review = ScriptManager::Service::CorrelazioneReview->new(repo => $c->repo);
+    my $execution;
+    my $ok = eval { ($execution) = $review->source($c->param('id')); 1 };
+    unless ($ok) {
+        my $error = $@;
+        $c->app->log->error("Selezione risultati correlazione fallita: $error");
+        return $c->render(text => ScriptManager::Exception->caught($error) ? $error->message
+            : 'Risultati non disponibili; consultare i log applicativi', status => 422);
+    }
+    my $result = $c->execution_service->submit(attualizza_correlazione_cmp => {
+        map({ $_ => $execution->{parameters}{$_} } qw(database airport)),
+        source_execution_id => $execution->{id},
+        activations => $c->req->body_params->every_param('activations'),
+        confirm_activation => Mojo::JSON::true,
+    }, requested_by => $c->current_user);
+    return $c->render(json => {errors => $result->{errors}}, status => 422) if $result->{errors};
+    return $c->redirect_to('execution', id => $result->{id});
 }
 
 sub retry_without_timeout ($c) {

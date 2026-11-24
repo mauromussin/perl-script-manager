@@ -1,0 +1,31 @@
+% layout 'default';
+% title 'Risultati correlazione';
+<h1>Risultati LVA e LVAn</h1>
+<p>Correlazione <%= $execution->{id} %>, database <%= $execution->{parameters}{database} %>.
+  Il valore totale comprende tutti gli eventi, come nel legacy.</p>
+<p>Seleziona i risultati da rendere correnti. Per ciascun tipo e stazione saranno
+  disattivati i valori precedenti nel periodo. Con MyISAM, errori o annullamenti
+  possono lasciare modifiche parziali.</p>
+<form method="post" action="<%= url_for 'correlation_activate', id => $execution->{id} %>">
+  <%= csrf_field %>
+% for my $result (@$results) {
+  <h2>Stazione <%= $result->{station_code} %> — <%= uc $result->{type} %></h2>
+% if (@{$result->{rows}}) {
+  <label><input type="checkbox" name="activations" value="<%= join ':', @$result{qw(log_id station_code type)} %>">
+    Attualizza questi risultati</label>
+  <table>
+    <thead><tr><th>Data</th><th>Tipo</th><th>Valore</th><th>Attuale</th></tr></thead>
+    <tbody>
+% for my $row (@{$result->{rows}}) {
+      <tr><td><%= $row->{giorno} %></td><td><%= $row->{correlato} ? 'Correlato' : 'Totale' %></td>
+        <td><%= $row->{valore} %></td><td><%= $row->{attuale} ? 'Si' : 'No' %></td></tr>
+% }
+    </tbody>
+  </table>
+% } else {
+  <p>Nessun risultato per il periodo.</p>
+% }
+% }
+  <label><input type="checkbox" name="confirm_activation" value="1" required> Confermo l'attualizzazione selezionata</label>
+  <button type="submit">Accoda attualizzazione</button>
+</form>

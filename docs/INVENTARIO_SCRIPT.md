@@ -716,6 +716,39 @@ procedure eseguibili dell'applicazione.
   dopo l'associazione blocca l'esecuzione. Non sono state eseguite importazioni
   sui dati operativi; la durata reale e da misurare.
 
+## 14-correla_eventi_cmp
+
+- Riferimento: `legacy/scripts/14-correla_eventi_cmp_0.64_LVA_Lvan.pl`;
+  analisi statica, sintassi Perl verificata, legacy invariato.
+- Input legacy: file tabulato con host, database, aeroporto, stazione `c_cab`,
+  date, shift, limiti temporali, distanza e condizione SQL opzionale.
+  La versione di riferimento legge la password anche dagli argomenti CLI.
+- Tabelle: `st_eventi_cmp`, `battute`, `flay`, `battute_eventi_cmp`, `st_lva`,
+  `st_lvan`, `anagrafica.stazioni`, `aeroporti`, `stazioni_sid` e `correla_log`.
+  Il legacy svuota e ricarica `battute_tmp`, ma la ricerca usa `battute`.
+- La procedura integrata non usa `battute_tmp` ne SQL libero; richiede
+  conferma della sostituzione delle correlazioni, per tutti gli shift,
+  e parametri per stazione. L'ultimo set di una richiesta completata diventa
+  default per la stessa stazione e server; date richieste ogni volta.
+- La formula legacy del valore detto non correlato comprende tutti gli eventi.
+  LVA e LVAn sono salvati per data, anche per giorni con solo totale:
+  differenza approvata rispetto all'accoppiamento posizionale legacy.
+  L'attualizzazione avviene solo dopo consultazione e conferma separata.
+- Parametri persistiti nello storico e nel log JSONB; `correla_log` MySQL
+  mantenuto usando l'ID inserito, senza `MAX(IdLog)`. Nessuna credenziale
+  nel file di parametri applicativo o nei log.
+- Tabelle mancanti create vuote soltanto dopo conferma, da `bgy_2024_bruma`
+  e, per `st_lvan`, `bgy_2025_bruma`; colonne richieste confrontate con i
+  riferimenti. Le scritture MyISAM sono AutoCommit e non garantiscono rollback.
+- Test: `t/integration/correla_eventi_cmp.t` e
+  `t/integration/correlazione_web.t` su database isolati. Nessuna modifica
+  o correlazione operativa durante i test.
+- Il cruscotto correlazioni legge `st_lva` attuale per aeroporto e anno:
+  date presenti nell'aeroporto, righe per stazione e colori per presenza
+  LVAc/LVAnc. Il rosso segnala l'ultima richiesta terminata con errore o
+  timeout nello storico applicativo per stazione e intervallo; non attesta
+  quale singolo giorno abbia causato l'errore e non include script esterni.
+
 ## Controlli temporali comuni dei comandi migrati 03-08 e 10
 
 - `date_from` e `date_to` facoltativi ma entrambi richiesti se uno e presente,

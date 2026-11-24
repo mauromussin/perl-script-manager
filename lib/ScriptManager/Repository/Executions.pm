@@ -217,6 +217,20 @@ sub claim_database_queue ($self, $exec) {
     return {db => $db, tx => $tx};
 }
 
+sub lock_database_for_schema ($self, $target) {
+    my $db = $self->pg->db;
+    my $tx = $db->begin;
+    return undef unless $db->query(
+        'select pg_try_advisory_xact_lock(hashtextextended(?, 0)) as locked',
+        "database-queue:$target")->hash->{locked};
+    my $pending = $db->query(q{
+        select 1 from executions where queue_target = ?
+          and status in ('queued', 'running', 'cancel_requested') limit 1
+    }, $target)->hash;
+    return undef if $pending;
+    return {db => $db, tx => $tx};
+}
+
 sub note_queue_wait ($self, $id) {
     my $step = 'In attesa del proprio turno nella coda del database';
     my $changed = $self->pg->db->query(q{
@@ -270,6 +284,20 @@ sub dashboard_executions ($self, $database) {
         where e.parameters->>'database' = ?
         order by e.requested_at desc, e.queue_order desc nulls last, e.id desc
     }, $database)->hashes->to_array;
+}
+
+sub correlation_dashboard_executions ($self, $target, $airport, $year) {
+    return $self->pg->db->query(q{
+        select e.id, e.status, e.parameters->>'date_from' as date_from,
+          e.parameters->>'date_to' as date_to, e.parameters->'stations' as stations
+        from executions e join procedures p on p.id = e.procedure_id
+        where p.code = 'correla_eventi_cmp' and e.queue_target = ?
+          and e.parameters->>'airport' = ?
+          and e.status in ('completed', 'failed', 'timed_out', 'cancelled')
+          and jsonb_typeof(e.parameters->'stations') = 'array'
+          and e.parameters->>'date_from' <= ? and e.parameters->>'date_to' >= ?
+        order by e.requested_at desc, e.queue_order desc nulls last, e.id desc
+    }, $target, $airport, "$year-12-31", "$year-01-01")->expand->hashes->to_array;
 }
 
 sub list_executions ($self, %f) {
@@ -353,6 +381,27 @@ SQL
 sub status ($self, $id) {
     my $r = $self->pg->db->query('select status from executions where id = ?', $id)->hash;
     return $r ? $r->{status} : undef;
+}
+
+sub correlation_defaults ($self, $airport, $server_prefix) {
+    my $rows = $self->pg->db->query(q{
+        select distinct on (split_part(s.value, ':', 1), split_part(s.value, ':', 2)) s.value
+        from executions e
+        join procedures p on p.id = e.procedure_id
+        cross join lateral jsonb_array_elements_text(e.parameters->'stations') as s(value)
+        where p.code = ? and e.status = ? and e.parameters->>'airport' = ?
+          and left(e.queue_target, length(?)) = ?
+        order by split_part(s.value, ':', 1), split_part(s.value, ':', 2),
+          e.finished_at desc, e.id desc
+    }, 'correla_eventi_cmp', 'completed', $airport, $server_prefix, $server_prefix)->arrays->to_array;
+    my %defaults;
+    for my $row (@$rows) {
+        my ($id, $code, $shift, $mti, $mta, $mdi) =
+            $row->[0] =~ /\A([1-9]\d*):(\d+):(-?\d+):(-?\d+):(-?\d+):(\d+(?:\.\d+)?)\z/;
+        next unless defined $id;
+        $defaults{"$id:$code"} //= {shift => $shift, mti => $mti, mta => $mta, mdi => $mdi};
+    }
+    return \%defaults;
 }
 
 # ---- events --------------------------------------------------------------

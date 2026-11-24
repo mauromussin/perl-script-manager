@@ -1,0 +1,76 @@
+% layout 'default';
+% title 'Cruscotto correlazioni';
+% my @month_names = qw(Gennaio Febbraio Marzo Aprile Maggio Giugno Luglio Agosto Settembre Ottobre Novembre Dicembre);
+<h1>Cruscotto correlazioni</h1>
+<form method="get" action="<%= url_for 'correlations_dashboard' %>" class="filters">
+  <label for="correlation-airport">Aeroporto</label>
+  <select id="correlation-airport" name="airport" required>
+    <option value="">Seleziona aeroporto</option>
+% for my $choice (qw(LIMC LIML LIME LIPO)) {
+    <option value="<%= $choice %>"<%= ($airport // '') eq $choice ? ' selected' : '' %>><%= $choice %></option>
+% }
+  </select>
+  <button type="submit">Cerca anni</button>
+</form>
+% if (defined $airport && length $airport) {
+% if (@$years) {
+<form method="get" action="<%= url_for 'correlations_dashboard' %>" class="filters">
+  <input type="hidden" name="airport" value="<%= $airport %>">
+  <label for="correlation-year">Anno</label>
+  <select id="correlation-year" name="year" required>
+    <option value="">Seleziona anno</option>
+% for my $choice (@$years) {
+    <option value="<%= $choice %>"<%= ($year // '') eq $choice ? ' selected' : '' %>><%= $choice %></option>
+% }
+  </select>
+  <button type="submit">Mostra correlazioni</button>
+</form>
+% } else {
+<p>Nessun database associato all'aeroporto.</p>
+% }
+% }
+% if (defined $database) {
+<p>Database <%= $database %>: solo risultati LVA attuali. Sono mostrate le date con almeno un dato attuale
+  tra le stazioni dell'aeroporto; bianco indica dato assente o LVAnc mancante.</p>
+<p>Il rosso segnala un'ultima correlazione terminata con errore o timeout il cui intervallo
+  comprende il giorno; non individua necessariamente il giorno in cui si e verificato l'errore.
+  Selezionare la cella rossa per consultare i log.</p>
+<ul class="heat-legend" aria-label="Legenda">
+  <li><span class="heat-key heat-success"></span> LVAc e LVAnc presenti</li>
+  <li><span class="heat-key heat-empty"></span> Dato assente o LVAnc mancante</li>
+  <li><span class="heat-key heat-failure"></span> Correlazione fallita o timeout</li>
+  <li><span class="heat-key heat-timeout"></span> Solo LVAnc</li>
+</ul>
+% if (!@$stations) {
+<p>Nessuna stazione associata all'aeroporto.</p>
+% } elsif (!@$months) {
+<p>Nessun dato LVA attuale per le stazioni nell'anno selezionato.</p>
+% }
+% for my $month (@$months) {
+<table class="correlation-heatmap">
+  <caption><%= $month_names[$month->{number} - 1] %> <%= $year %></caption>
+  <thead><tr><th scope="col">Stazione</th>
+%   for my $day (@{$month->{days}}) {
+    <th scope="col" title="<%= $day %>"><%= substr($day, 8, 2) %></th>
+%   }
+  </tr></thead>
+  <tbody>
+%   for my $station (@$stations) {
+    <tr data-station="<%= $station->{row_id} %>">
+      <th scope="row"><%= $station->{nome} // 'Stazione senza nome' %> (<%= $station->{c_cab} // 'codice assente' %>)</th>
+%     for my $day (@{$month->{days}}) {
+%       my $cell = $station->{cells}{$day};
+      <td data-day="<%= $day %>">
+%       if ($cell->{execution_id}) {
+        <a class="correlation-cell heat-<%= $cell->{tone} %>" href="<%= url_for 'execution', id => $cell->{execution_id} %>" title="<%= "$day: $cell->{label}" %>" aria-label="<%= "$day: $cell->{label}" %>"></a>
+%       } else {
+        <span role="img" tabindex="0" class="correlation-cell heat-<%= $cell->{tone} %>" title="<%= "$day: $cell->{label}" %>" aria-label="<%= "$day: $cell->{label}" %>"></span>
+%       }
+      </td>
+%     }
+    </tr>
+%   }
+  </tbody>
+</table>
+% }
+% }

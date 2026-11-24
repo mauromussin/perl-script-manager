@@ -49,3 +49,13 @@ a.heat-cell:hover, a.heat-cell:focus-visible { outline: 3px solid #2f6fed; outli
 .heat-timeout { background: #ffe28a; }
 .heat-active { background: #d3d7dd; }
 .heat-summary { padding: .2rem .4rem; border-radius: 4px; color: #1d2733; }
+.correlation-heatmap { table-layout: fixed; margin: 1rem 0; }
+.correlation-heatmap caption { padding: .5rem; text-align: left; font-weight: 600; }
+.correlation-heatmap th, .correlation-heatmap td { text-align: center; padding: 1px; font-size: .7rem; }
+.correlation-heatmap th:first-child { width: 23%; text-align: left; overflow-wrap: anywhere; }
+.correlation-cell { display: block; box-sizing: border-box; width: 100%; height: 1.25rem; border: 1px solid #6b7280; }
+.correlation-cell:hover, .correlation-cell:focus-visible { outline: 3px solid #2f6fed; outline-offset: 1px; }
+@media (max-width: 700px) {
+  .correlation-heatmap th, .correlation-heatmap td { font-size: clamp(.3rem, 1.3vw, .65rem); }
+  .correlation-heatmap th:first-child { font-size: .65rem; }
+}

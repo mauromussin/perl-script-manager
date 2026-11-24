@@ -80,7 +80,7 @@ sub startup ($self) {
 
     $self->hook(before_dispatch => sub ($c) {
         $service->reconcile_interrupted
-            if $c->req->url->path->to_string =~ m{\A/(?:(?:api/)?executions(?:/|\z)|cruscotto\z)};
+            if $c->req->url->path->to_string =~ m{\A/(?:(?:api/)?executions(?:/|\z)|cruscotto(?:-correlazioni)?\z)};
     });
 
     $self->hook(after_dispatch => sub ($c) {
@@ -102,13 +102,20 @@ sub _routes ($self) {
     $r->get('/healthz')->to('catalog#health');
     $r->get('/')->to('catalog#index')->name('catalog');
     $r->get('/cruscotto')->to('dashboard#index')->name('dashboard');
+    $r->get('/cruscotto-correlazioni')->to('dashboard#correlations')->name('correlations_dashboard');
     $r->get('/procedures/<code>')->to('catalog#show')->name('procedure');
     $r->post('/procedures/<code>/run')->to('executions#create')->name('procedure_run');
+    $r->post('/procedures/correla_eventi_cmp/prepare')->to('catalog#prepare_correlation')
+        ->name('correlation_prepare');
     $r->get('/executions')->to('executions#index')->name('executions');
     $r->get('/executions/<id>')->to('executions#show')->name('execution');
     $r->post('/executions/<id>/cancel')->to('executions#cancel')->name('execution_cancel');
     $r->post('/executions/<id>/retry-without-timeout')
         ->to('executions#retry_without_timeout')->name('execution_timeout_bypass');
+    $r->get('/executions/<id>/correlation-results')
+        ->to('executions#correlation_results')->name('correlation_results');
+    $r->post('/executions/<id>/correlation-activate')
+        ->to('executions#correlation_activate')->name('correlation_activate');
     $r->get('/executions/<id>/artifacts/<artifact_id>')->to('executions#download')->name('artifact');
 
     $r->get('/api/procedures')->to('api#procedures');

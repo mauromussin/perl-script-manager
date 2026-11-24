@@ -256,6 +256,59 @@ procedures:
           type: array
           minItems: 1
           items: {type: string, pattern: '^[1-9][0-9]*:[0-9]+$'}
+  - code: correla_eventi_cmp
+    name: 14-correla_eventi_cmp
+    description: >-
+      Correla gli eventi acustici alle battute e calcola LVA e LVAn.
+      La sostituzione elimina le correlazioni esistenti della stazione nel periodo,
+      per tutti gli shift. MyISAM non garantisce rollback in caso di interruzione.
+    enabled: true
+    handler_class: ScriptManager::Command::CorrelaEventiCMP
+    queue_by_database: true
+    execution_mode: async
+    timeout_seconds: 3600
+    exclusive: true
+    retention_days: 7
+    parameter_schema:
+      type: object
+      required: [database, airport, date_from, date_to, stations, confirm_parameters, confirm_replacement]
+      properties:
+        database: *runway_database
+        airport: *runway_airport
+        date_from: {type: string, format: date}
+        date_to: {type: string, format: date}
+        stations:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: {type: string, pattern: '^[1-9][0-9]*:[0-9]+:-?[0-9]+:-?[0-9]+:-?[0-9]+:[0-9]+(\.[0-9]+)?$'}
+        confirm_parameters: {type: boolean, enum: [true]}
+        confirm_replacement: {type: boolean, enum: [true]}
+  - code: attualizza_correlazione_cmp
+    name: 14-attualizza risultati LVA e LVAn
+    ui_hidden: true
+    description: >-
+      Attualizza i risultati selezionati dopo la verifica della correlazione.
+      Con MyISAM le interruzioni possono lasciare modifiche parziali.
+    enabled: true
+    handler_class: ScriptManager::Command::AttualizzaCorrelazione
+    queue_by_database: true
+    execution_mode: async
+    timeout_seconds: 3600
+    exclusive: true
+    parameter_schema:
+      type: object
+      required: [database, airport, source_execution_id, activations, confirm_activation]
+      properties:
+        database: *runway_database
+        airport: *runway_airport
+        source_execution_id: {type: string, pattern: '^[0-9a-fA-F-]{36}$'}
+        activations:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: {type: string, pattern: '^[1-9][0-9]*:[0-9]+:(lva|lvan)$'}
+        confirm_activation: {type: boolean, enum: [true]}
   - code: example_echo
     name: Esempio - eco con file di output
     description: >-

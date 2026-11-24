@@ -77,6 +77,52 @@ permessi di lettura dell'anagrafica e di scrittura (e, in tale caso, LOCK TABLES
 sul database di destinazione. Le tabelle MyISAM non consentono rollback:
 errori, timeout o annullamento possono lasciare un'importazione parziale.
 
+### Correlazione eventi: procedura 14
+
+Selezionare aeroporto, database `<IATA>_<AAAA>_bruma`, periodo e una o piu
+stazioni. Per ciascuna stazione sono mostrati contemporaneamente shift,
+limiti temporali e distanza massima: i default iniziali sono 1 s, -90 s,
+100 s e 5000 m. Dopo una correlazione completata diventano i default
+della stessa stazione sullo stesso server MySQL. Le date sono sempre richieste.
+Confermare esplicitamente parametri e sostituzione delle correlazioni esistenti,
+che riguarda tutti gli shift della stazione nel periodo. La clausola SQL
+legacy `cond` non e utilizzabile.
+
+Le stazioni sono individuate in `anagrafica.stazioni` e gli eventi tramite
+`c_cab`. La selezione richiede coordinate valide, codici non ambigui e almeno
+un evento con SEL valorizzato per ogni stazione. Il comando usa le battute
+validate e la distanza tridimensionale, registra i parametri nello storico
+PostgreSQL JSONB e scrive anche `anagrafica.correla_log`.
+Calcola LVA e LVAn per giorno, distinguendo eventi correlati e totale degli
+eventi: quest'ultimo corrisponde al valore chiamato non correlato dal legacy.
+Il totale viene salvato anche per giorni senza correlazioni. Dopo il
+completamento, **Verifica e attualizza LVA/LVAn** mostra i valori e consente
+di accodare separatamente l'attualizzazione dei risultati selezionati.
+I giorni senza nuovi risultati conservano i valori attuali precedenti.
+
+Il **Cruscotto correlazioni** seleziona aeroporto e anno dal nome del
+database e mostra, per ogni stazione, le date con almeno un LVA attuale
+nell'aeroporto. Verde: LVAc e LVAnc presenti; giallo: solo LVAnc;
+bianco: nessun dato o LVAnc mancante. Rosso: ultima correlazione terminata
+con errore o timeout per un intervallo che comprende quel giorno; la cella
+apre i log. L'errore e attribuito all'intervallo richiesto, non al singolo
+giorno. Annullamenti e richieste in corso non sono errori. Il cruscotto
+usa `st_lva`, non `st_lvan`, e non considera i calcoli non attualizzati.
+Le segnalazioni rosse provengono dallo storico dello Script Manager sullo
+stesso server e database, non rilevano errori di script esterni.
+
+Se mancano tabelle, la pagina propone la creazione vuota solo dopo conferma:
+usa gli schemi di `bgy_2024_bruma`, e per `st_lvan` quello di
+`bgy_2025_bruma`. Occorrono permessi di lettura sui riferimenti e CREATE
+sul database scelto. Le colonne richieste delle tabelle presenti sono
+verificate rispetto ai riferimenti. La creazione non importa gli eventi e
+richiede che la coda del database sia libera.
+
+Correlazione e attualizzazione condividono la coda per database. Le scritture
+sono in AutoCommit: con MyISAM errori, timeout o annullamenti possono lasciare
+cancellazioni o aggiornamenti parziali. Verificare log e dati prima di riprovare;
+gli script esterni non partecipano alla coda applicativa.
+
 ### Selezione delle tracce radar
 
 Il parametro `folder` accetta `.` oppure una sottocartella relativa, per esempio
