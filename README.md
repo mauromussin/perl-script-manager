@@ -793,8 +793,13 @@ Remove-Item Env:\TEST_MYSQL
 I motori misti non sono supportati. InnoDB mantiene la gestione transazionale;
 MyISAM usa staging e compensazione, senza convertire le tabelle legacy.
 
-La 02 ha un timeout ordinario di 3600 secondi dall'avvio. Dopo un timeout
-effettivo, nel dettaglio e possibile confermare una nuova richiesta senza
+La 02 ha un timeout ordinario di 3600 secondi dall'avvio. Nel modulo web
+si puo confermare prima dell'avvio l'esecuzione senza timeout, solo per
+quella richiesta. La checkbox e inizialmente deselezionata, la scelta e
+registrata nel log e un normale Riesegui richiede una nuova conferma.
+Restano attivi coda, cancellazione e controlli di recupero MyISAM; errori
+o interruzioni possono comunque richiedere recupero dei dati.
+Dopo un timeout effettivo, nel dettaglio e possibile confermare una nuova richiesta senza
 timeout, con gli stessi parametri e nella stessa coda. La scelta e registrata
 nel log e non si applica al normale Riesegui; la cancellazione rimane attiva.
 Non e disponibile per errori di recupero o dati gia pubblicati.

@@ -18,7 +18,17 @@ sub create ($c) {
     my $input     = $proc->{code} eq 'correla_eventi_cmp'
         ? ScriptManager::Service::CorrelazioneSetup->new->form_input($c->req->body_params)
         : $validator->from_form($c->req->body_params);
-    my $result    = $c->execution_service->submit($proc->{code}, $input, requested_by => $c->current_user);
+    my %options = (requested_by => $c->current_user);
+    if ($proc->{code} eq 'carica_db') {
+        my $values = $c->req->body_params->every_param('confirm_timeout_bypass');
+        return $c->render(text => 'Conferma timeout non valida', status => 422)
+            if @$values && (@$values != 1 || $values->[0] ne '1');
+        if (@$values) {
+            $options{timeout_bypass_confirmed} = 1;
+            $c->stash(timeout_bypass_confirmed => 1);
+        }
+    }
+    my $result = $c->execution_service->submit($proc->{code}, $input, %options);
 
     return ScriptManager::Controller::Catalog::render_eventi($c, $proc, $input, $result->{errors})
         if $result->{errors} && $proc->{code} eq 'carica_eventi_cmp';

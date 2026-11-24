@@ -17,6 +17,11 @@ has logger         => sub { Log::Any->get_logger(category => 'ScriptManager::Exe
 sub submit ($self, $code, $input, %o) {
     my $proc = $self->registry->get($code)
         // ScriptManager::Exception->throw('unknown_procedure', 'Procedura non disponibile');
+    my $initial_bypass = exists $o{timeout_bypass_confirmed};
+    ScriptManager::Exception->throw('timeout_bypass_not_allowed', 'Conferma preventiva non valida')
+        if $initial_bypass && ($code ne 'carica_db' || defined $o{timeout_bypass_from}
+            || !defined $o{timeout_bypass_confirmed} || ref $o{timeout_bypass_confirmed}
+            || $o{timeout_bypass_confirmed} ne '1');
     my $source;
     if (defined $o{timeout_bypass_from}) {
         $source = $self->repo->get_execution($o{timeout_bypass_from});
@@ -46,15 +51,16 @@ sub submit ($self, $code, $input, %o) {
         requested_by   => $o{requested_by} // 'anonymous',
         parameters     => $validator->redact($params),
         queue_target   => $target,
-        timeout_bypassed => $source ? 1 : 0,
+        timeout_bypassed => ($source || $initial_bypass) ? 1 : 0,
     );
     $self->repo->add_event($id, 'info', 'Esecuzione registrata', event_type => 'state');
     $self->repo->add_event($id, 'warning',
         ($code eq 'carica_db' ? 'Conferma utente: timeout reale disattivato per questa esecuzione; '
             : 'Conferma utente: controllo della stima e timeout reale disattivati per questa esecuzione; ')
         . 'possibili scritture parziali in caso di interruzione',
-        event_type => 'state', metadata => {operation => 'timeout_bypass', source_execution_id => $source->{id}})
-        if $source;
+        event_type => 'state', metadata => {operation => 'timeout_bypass',
+            $source ? (source_execution_id => $source->{id}) : (source => 'initial_confirmation')})
+        if $source || $initial_bypass;
 
     if ($proc->{execution_mode} eq 'async') {
         my $job_id = eval { $self->minion->enqueue(run_procedure => [$id], {attempts => 1}) };

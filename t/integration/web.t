@@ -182,7 +182,42 @@ subtest '08: conferma per stima eccessiva o assente, con stessa coda e parametri
     }
 };
 
-subtest '02: conferma esplicita solo dopo timeout reale' => sub {
+subtest '02: conferma preventiva sul modulo di avvio' => sub {
+    local $ENV{MYSQL_HOST} = 'mysql.test';
+    local $ENV{MYSQL_PORT} = 3306;
+    my $repo = $t->app->repo;
+    my %form = (database => 'radar_initial_web', folder => 'BGY_2026', radar => 'lin_2026');
+    $t->get_ok('/procedures/carica_db')->status_is(200)
+        ->element_exists('input[name=confirm_timeout_bypass]')
+        ->element_exists_not('input[name=confirm_timeout_bypass][checked]')
+        ->content_like(qr/timeout ordinario/);
+    my $token = csrf();
+    $t->post_ok('/procedures/carica_db/run' => form => {%form, confirm_timeout_bypass => 1})
+        ->status_is(403, 'CSRF obbligatorio');
+    $t->post_ok('/procedures/carica_db/run' => form =>
+        {%form, csrf_token => $token, confirm_timeout_bypass => '0'})->status_is(422);
+    $t->post_ok('/procedures/carica_db/run' => form =>
+        {csrf_token => $token, confirm_timeout_bypass => 1})->status_is(422)
+        ->element_exists('input[name=confirm_timeout_bypass][checked]');
+    $t->post_ok('/procedures/carica_db/run' => form =>
+        {%form, csrf_token => $token, confirm_timeout_bypass => 1})->status_is(302);
+    my ($id) = $t->tx->res->headers->location =~ m{/executions/([0-9a-f-]+)};
+    my $execution = $repo->get_execution($id);
+    ok $execution->{timeout_bypassed}, 'conferma preventiva persistita';
+    ok !exists $execution->{parameters}{confirm_timeout_bypass}, 'non e parametro del comando';
+    $t->get_ok("/executions/$id")->status_is(200)->content_like(qr/Timeout disattivato/);
+    $t->get_ok("/procedures/carica_db?from=$id")->status_is(200)
+        ->element_exists_not('input[name=confirm_timeout_bypass][checked]');
+    $token = csrf();
+    $t->post_ok('/procedures/carica_db/run' => form => {%form, csrf_token => $token})->status_is(302);
+    my ($normal) = $t->tx->res->headers->location =~ m{/executions/([0-9a-f-]+)};
+    ok !$repo->get_execution($normal)->{timeout_bypassed}, 'richiesta normale mantiene il timeout';
+    $t->post_ok('/api/procedures/carica_db/executions' => json =>
+        {%form, confirm_timeout_bypass => Mojo::JSON::true})->status_is(422)
+        ->json_has('/errors/0');
+};
+
+subtest '02: conferma esplicita dopo timeout reale' => sub {
     local $ENV{MYSQL_HOST} = 'mysql.test';
     local $ENV{MYSQL_PORT} = 3306;
     my $service = $t->app->execution_service;

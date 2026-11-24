@@ -462,7 +462,55 @@ subtest '08: conferma senza storico elimina timeout reale, non la cancellazione'
     is $svc->execute($retry), 'cancelled', 'bypass non disattiva la cancellazione';
 };
 
-subtest '02: bypass solo dopo timeout, con stessi parametri e coda' => sub {
+subtest '02: conferma preventiva limita il bypass alla richiesta' => sub {
+    local $ENV{MYSQL_HOST} = 'mysql.test';
+    local $ENV{MYSQL_PORT} = 3306;
+    my $app = TestHelper::mojo()->app;
+    my $svc = $app->execution_service;
+    my $repository = $app->repo;
+    my $input = {database => 'radar_initial', folder => 'BGY_2026', radar => 'lin_2026',
+        merge_midnight => Mojo::JSON::false};
+    my $cancel_run = 0;
+    no warnings qw(redefine once);
+    local *ScriptManager::Command::Example::run = sub {
+        my (undef, $ctx) = @_;
+        Time::HiRes::sleep(1.2);
+        $repository->request_cancel($ctx->execution_id) if $cancel_run;
+        $ctx->check_cancel;
+        return {success => 1, message => '02 completata'};
+    };
+    my $head = $svc->submit(carica_db => $input)->{id};
+    my $id = $svc->submit(carica_db => $input, timeout_bypass_confirmed => 1,
+        requested_by => 'confirmed-user')->{id};
+    my $execution = $repository->get_execution($id);
+    ok $execution->{timeout_bypassed}, 'scelta persistita sulla richiesta confermata';
+    is $execution->{queue_position}, 2, 'rimane nella coda del database';
+    is_deeply $execution->{parameters}, $repository->get_execution($head)->{parameters},
+        'conferma separata dai parametri del comando';
+    is $execution->{requested_by}, 'confirmed-user';
+    my ($audit) = grep { ($_->{metadata}{operation} // '') eq 'timeout_bypass' }
+        @{$repository->list_events($id)};
+    is $audit->{metadata}{source}, 'initial_confirmation', 'conferma preventiva registrata';
+    ok !exists $audit->{metadata}{source_execution_id}, 'nessuna esecuzione precedente inventata';
+    is $svc->execute($id), 'queued', 'non supera la coda';
+    is $svc->cancel($head), 'cancelled';
+    is $svc->execute($id), 'completed', 'supera il timeout configurato';
+    my $normal = $svc->submit(carica_db => $input)->{id};
+    ok !$repository->get_execution($normal)->{timeout_bypassed}, 'timeout normale ancora attivo';
+    is $svc->execute($normal), 'timed_out';
+    $cancel_run = 1;
+    my $cancelled = $svc->submit(carica_db => $input, timeout_bypass_confirmed => 1)->{id};
+    is $svc->execute($cancelled), 'cancelled', 'cancellazione ancora attiva';
+    for my $case ([test_async => 1], [carica_db => 0]) {
+        eval { $svc->submit($case->[0] => $input, timeout_bypass_confirmed => $case->[1]) };
+        ok(ScriptManager::Exception->caught($@, 'timeout_bypass_not_allowed'), 'conferma non valida rifiutata');
+    }
+    eval { $svc->submit(carica_db => $input, timeout_bypass_confirmed => 1, timeout_bypass_from => $normal) };
+    ok(ScriptManager::Exception->caught($@, 'timeout_bypass_not_allowed'),
+        'conferma preventiva non aggira i controlli sulla riesecuzione');
+};
+
+subtest '02: bypass dopo timeout, con stessi parametri e coda' => sub {
     local $ENV{MYSQL_HOST} = 'mysql.test';
     local $ENV{MYSQL_PORT} = 3306;
     my $app = TestHelper::mojo()->app;

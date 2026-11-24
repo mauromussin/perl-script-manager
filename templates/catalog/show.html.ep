@@ -70,5 +70,14 @@
 % }
   </div>
 % }
+% if ($procedure->{code} eq 'carica_db') {
+  <div class="field">
+    <p>Il timeout ordinario e <%= $procedure->{timeout_seconds} %> secondi.
+      Disattivarlo vale solo per questa richiesta; cancellazioni o errori possono richiedere
+      il recupero dei dati. La coda e i controlli MyISAM restano attivi.</p>
+    <label><input type="checkbox" name="confirm_timeout_bypass" value="1"<%= stash('timeout_bypass_confirmed') ? ' checked' : '' %>>
+      Confermo di eseguire questa importazione senza timeout</label>
+  </div>
+% }
   <button type="submit">Avvia</button>
 </form>
