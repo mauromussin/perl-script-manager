@@ -80,7 +80,7 @@ sub startup ($self) {
 
     $self->hook(before_dispatch => sub ($c) {
         $service->reconcile_interrupted
-            if $c->req->url->path->to_string =~ m{\A/(?:api/)?executions(?:/|\z)};
+            if $c->req->url->path->to_string =~ m{\A/(?:(?:api/)?executions(?:/|\z)|cruscotto\z)};
     });
 
     $self->hook(after_dispatch => sub ($c) {
@@ -101,6 +101,7 @@ sub _routes ($self) {
 
     $r->get('/healthz')->to('catalog#health');
     $r->get('/')->to('catalog#index')->name('catalog');
+    $r->get('/cruscotto')->to('dashboard#index')->name('dashboard');
     $r->get('/procedures/<code>')->to('catalog#show')->name('procedure');
     $r->post('/procedures/<code>/run')->to('executions#create')->name('procedure_run');
     $r->get('/executions')->to('executions#index')->name('executions');

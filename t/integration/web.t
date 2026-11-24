@@ -182,4 +182,33 @@ subtest '08: conferma per stima eccessiva o assente, con stessa coda e parametri
     }
 };
 
+subtest '10: conferma per stima assente o timeout reale' => sub {
+    local $ENV{MYSQL_HOST} = 'mysql.test';
+    local $ENV{MYSQL_PORT} = 3306;
+    my $service = $t->app->execution_service;
+    my $repo = $t->app->repo;
+    for my $case (
+        ['timeout_estimate_unavailable', 'failed', qr/Durata non stimabile/],
+        ['timed_out', 'timed_out', qr/esecuzione precedente ha raggiunto il timeout configurato/],
+    ) {
+        my ($error, $status, $message) = @$case;
+        my $source = $service->submit(correggi_quote => {database => 'quote_web',
+            date_from => '2026-09-01', date_to => '2026-09-30', overwrite => Mojo::JSON::true})->{id};
+        $repo->mark_finished($source, status => $status, exit_code => 1, error_code => $error);
+        $t->get_ok("/executions/$source")->status_is(200)
+            ->element_exists('input[name=confirm_timeout_bypass][required]')
+            ->content_like($message);
+        my $token = csrf();
+        $t->get_ok("/api/executions/$source")->status_is(200)
+            ->json_is('/timeout_bypass_available' => Mojo::JSON::true);
+        $t->post_ok("/executions/$source/retry-without-timeout" => form =>
+            {csrf_token => $token, confirm_timeout_bypass => 1})->status_is(302);
+        my ($retry) = $t->tx->res->headers->location =~ m{/executions/([0-9a-f-]+)};
+        my $execution = $repo->get_execution($retry);
+        is $execution->{procedure_code}, 'correggi_quote', 'riesegue la 10';
+        ok $execution->{timeout_bypassed};
+        is_deeply $execution->{parameters}, $repo->get_execution($source)->{parameters};
+    }
+};
+
 done_testing;

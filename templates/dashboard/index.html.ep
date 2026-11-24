@@ -1,0 +1,101 @@
+% layout 'default';
+% title 'Cruscotto';
+% my @months = qw(Gen Feb Mar Apr Mag Giu Lug Ago Set Ott Nov Dic);
+<h1>Cruscotto</h1>
+
+% if (!@$databases) {
+<p>Nessun database presente nello storico delle esecuzioni.</p>
+% } else {
+<form method="get" action="<%= url_for 'dashboard' %>" class="filters">
+  <label for="dashboard-database">Database</label>
+  <select id="dashboard-database" name="database">
+% for my $db (@$databases) {
+    <option value="<%= $db %>"<%= $database eq $db ? ' selected' : '' %>><%= $db %></option>
+% }
+  </select>
+  <button type="submit">Seleziona database</button>
+</form>
+<form method="get" action="<%= url_for 'dashboard' %>" class="filters">
+  <input type="hidden" name="database" value="<%= $database %>">
+  <label for="dashboard-year">Anno dei dati</label>
+  <select id="dashboard-year" name="year">
+% for my $y (@$years) {
+    <option value="<%= $y %>"<%= $year == $y ? ' selected' : '' %>><%= $y %></option>
+% }
+  </select>
+  <button type="submit">Mostra anno</button>
+</form>
+
+<p>I mesi si riferiscono all'intervallo richiesto, non alla data di esecuzione.
+  Ogni cella mostra lo stato della richiesta piu recente che comprende quel mese,
+  anche se accodata o in corso. Non certifica la copertura completa dei dati
+  o il completamento delle procedure dipendenti.</p>
+<p>La data nella cella e quella di completamento, in ora italiana; puo appartenere a un altro anno.
+  Seleziona una cella per consultare i log.</p>
+
+<ul class="heat-legend" aria-label="Legenda">
+  <li><span class="heat-key heat-empty"></span> Nessuna operazione</li>
+  <li><span class="heat-key heat-success"></span> Riuscita</li>
+  <li><span class="heat-key heat-failure"></span> Fallita / annullata</li>
+  <li><span class="heat-key heat-timeout"></span> Timeout</li>
+  <li><span class="heat-key heat-active"></span> Accodata / in corso</li>
+</ul>
+% for my $warning (@$warnings) {
+<div class="alert" role="alert"><strong>Warning:</strong> <%= $warning %></div>
+% }
+
+<div class="heat-scroll" role="region" aria-label="Heatmap mensile" tabindex="0">
+<table class="heatmap">
+  <caption><%= $database %> &mdash; anno dei dati <%= $year %></caption>
+  <thead>
+    <tr><th scope="col">Procedura</th>
+% for my $month (@months) {
+      <th scope="col"><%= $month %></th>
+% }
+    </tr>
+  </thead>
+  <tbody>
+% for my $p (@$procedures) {
+    <tr data-procedure="<%= $p->{code} %>">
+      <th scope="row"><%= $p->{name} %></th>
+%   for my $month (1 .. 12) {
+%     my $e = $cells->{$p->{code}}{$month};
+      <td data-month="<%= $month %>">
+%     if ($e) {
+        <a class="heat-cell heat-<%= $e->{tone} %>" href="<%= url_for 'execution', id => $e->{id} %>"
+          title="<%= $e->{date_from} %> - <%= $e->{date_to} %>; richiesta <%= $e->{requested_date} %>">
+          <span><%= $e->{status_label} %></span>
+          <span><%= $e->{finished_date} // 'Non conclusa' %></span>
+        </a>
+%     } else {
+        <span class="heat-cell heat-empty" aria-label="Nessuna operazione">-</span>
+%     }
+      </td>
+%   }
+    </tr>
+% }
+  </tbody>
+</table>
+</div>
+
+% if (@$unknown) {
+<h2>Intervallo non specificato o non valido</h2>
+<p>Queste richieste non sono attribuite a nessun mese o anno. Per ogni procedura
+  e mostrata l'ultima richiesta senza intervallo, indipendentemente dall'anno selezionato.</p>
+<table class="dashboard-unknown">
+  <thead><tr><th scope="col">Procedura</th><th scope="col">Richieste</th>
+    <th scope="col">Ultimo stato</th><th scope="col">Completamento</th></tr></thead>
+  <tbody>
+% for my $entry (@$unknown) {
+%   my $e = $entry->{execution};
+    <tr>
+      <th scope="row"><%= $entry->{name} %></th>
+      <td><%= $entry->{count} %></td>
+      <td><a class="heat-summary heat-<%= $e->{tone} %>" href="<%= url_for 'execution', id => $e->{id} %>"><%= $e->{status_label} %></a></td>
+      <td><%= $e->{finished_date} // 'Non conclusa' %></td>
+    </tr>
+% }
+  </tbody>
+</table>
+% }
+% }

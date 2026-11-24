@@ -205,6 +205,8 @@ procedures:
       Normalizza Z_m in A_m con pressione e temperatura orarie Open-Meteo alla quota ARP.
       Usa l'ora contenente data_ora_arr e solo giornate importate da 09 con provenienza verificata.
       Salta con avviso le tracce senza meteo valido. Nessuna chiamata API.
+      Letture per gruppi di tracce e aggiornamenti a lotti; stima del salvataggio e conferma per
+      rieseguire senza timeout se manca una misura o la durata supera il limite.
       Date facoltative; Sovrascrivi ricalcola anche lo stato 3. AutoCommit senza rollback.
     enabled: true
     handler_class: ScriptManager::Command::CorreggiQuote

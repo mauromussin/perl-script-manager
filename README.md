@@ -3,6 +3,23 @@
 Applicazione web (Mojolicious + Minion + PostGIS) per l'esecuzione guidata di procedure Perl.
 Specifica completa: [docs/ANALISI_APPLICAZIONE.md](docs/ANALISI_APPLICAZIONE.md).
 
+## Cruscotto
+
+La voce **Cruscotto** mostra lo stato delle richieste per database e anno dei
+dati. Ogni mese compreso tra `date_from` e `date_to` inclusi riporta l'ultima
+richiesta per data di registrazione, anche se riguarda solo parte del mese.
+Bianco: nessuna richiesta; verde: completata; rosso: fallita o annullata;
+giallo: timeout; grigio: accodata, in corso o annullamento richiesto.
+Ogni cella indica la data di conclusione italiana, se disponibile, e collega
+al dettaglio dell'esecuzione. La data puo essere successiva all'anno dei dati.
+
+Il riepilogo riflette lo storico conservato nell'applicazione, non verifica
+direttamente i dati radar o le dipendenze tra procedure: un mese verde non
+garantisce che tutte le sue giornate siano complete. Le richieste senza date
+o con intervallo non valido sono riepilogate separatamente senza attribuirle
+a mesi o anni; un warning compare nella pagina e nei log applicativi. I
+database e le procedure non presenti nello storico non hanno risultati.
+
 ## Avvio
 
 ```bash
@@ -109,6 +126,26 @@ In GitHub aprire **Actions > build-image > esecuzione riuscita > Artifacts**,
 scaricare l'artifact ed estrarre lo ZIP. Il download richiede accesso a GitHub
 e ai suoi endpoint di artifact: non e garantito che il proxy aziendale lo consenta.
 Se necessario trasferire lo ZIP tramite un canale autorizzato.
+
+Su Windows, dalla root del repository in PowerShell, e disponibile il batch:
+
+```powershell
+.\aggiorna.bat
+# Oppure scegliere uno ZIP specifico:
+.\aggiorna.bat -ArtifactZip "$env:USERPROFILE\Downloads\perl-script-manager-linux-amd64-<commit>.zip"
+```
+
+Il batch usa `aggiorna.ps1`: seleziona per default lo ZIP
+`perl-script-manager*.zip` modificato piu di recente in Downloads, mostra il
+percorso, estrae in una cartella temporanea, verifica SHA256 e importa in Docker.
+Poi ferma app e worker e li riavvia insieme con l'immagine locale
+`perl-script-manager:production`, senza build, pull o riavvio del database.
+Attende l'avvio dei container (massimo 60 secondi) e ne mostra lo stato.
+Eseguirlo solo quando non ci sono procedure in corso: il riavvio puo
+interromperle lasciando scritture parziali. Gli errori interrompono il batch
+con codice non zero; se avvengono dopo lo stop i servizi possono restare fermi.
+Lo ZIP originale e conservato, l'estrazione temporanea viene eliminata e
+nessuna impostazione di `.env` viene modificata.
 
 Da PowerShell, nella cartella estratta, verificare il checksum e importare:
 

@@ -28,3 +28,17 @@ button, .button { padding: .45rem 1rem; border: 0; border-radius: 4px; backgroun
 .log tr.warning td { color: #8a5a00; }
 .log tr.critical td { color: #9b1c1c; background: #f6d2d2; font-weight: 700; }
 .log td:last-child { overflow-wrap: anywhere; }
+.heat-scroll { overflow-x: auto; margin: 1rem 0; }
+.heatmap caption { padding: .5rem; font-weight: 600; text-align: left; }
+.heatmap th, .heatmap td { text-align: center; padding: .25rem; }
+.heatmap th[scope=row] { text-align: left; min-width: 13rem; }
+.heat-cell { box-sizing: border-box; display: flex; flex-direction: column; justify-content: center; gap: .35rem; width: 5.5rem; height: 5.5rem; border: 1px solid #6b7280; border-radius: 4px; color: #1d2733; text-decoration: none; font-size: .75rem; }
+a.heat-cell:hover, a.heat-cell:focus-visible { outline: 3px solid #2f6fed; outline-offset: 1px; }
+.heat-legend { display: flex; flex-wrap: wrap; gap: 1rem; padding: 0; list-style: none; }
+.heat-key { display: inline-block; width: 1rem; height: 1rem; border: 1px solid #6b7280; vertical-align: middle; }
+.heat-empty { background: #fff; }
+.heat-success { background: #b7e5c4; }
+.heat-failure { background: #f3b4b4; }
+.heat-timeout { background: #ffe28a; }
+.heat-active { background: #d3d7dd; }
+.heat-summary { padding: .2rem .4rem; border-radius: 4px; color: #1d2733; }

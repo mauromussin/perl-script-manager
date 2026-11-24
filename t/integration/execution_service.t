@@ -6,6 +6,7 @@ use TestHelper;
 use File::Temp 'tempdir';
 use Mojo::File 'path';
 use ScriptManager::Command::CaricaDB;
+use ScriptManager::Command::CorreggiQuote;
 
 plan skip_all => 'TEST_ONLINE non impostata' unless TestHelper::online();
 
@@ -459,6 +460,37 @@ subtest '08: conferma senza storico elimina timeout reale, non la cancellazione'
     is $svc->cancel($head), 'cancelled';
     $cancel_run = 1;
     is $svc->execute($retry), 'cancelled', 'bypass non disattiva la cancellazione';
+};
+
+subtest '10: conferma puo riprendere una normalizzazione terminata per timeout' => sub {
+    local $ENV{MYSQL_HOST} = 'mysql.test';
+    my $app = TestHelper::mojo()->app;
+    my $svc = $app->execution_service;
+    my $repository = $app->repo;
+    my $source = $svc->submit(correggi_quote => {database => 'quote_timeout'})->{id};
+    $repository->mark_finished($source, status => 'timed_out', exit_code => 1,
+        error_code => 'timed_out', error_message => 'Timeout 10');
+    ok $svc->can_bypass_timeout($repository->get_execution($source)),
+        'la 10 scaduta espone una conferma esplicita';
+
+    my $retry = $svc->submit(correggi_quote => {}, timeout_bypass_from => $source)->{id};
+    no warnings qw(redefine once);
+    local *ScriptManager::Command::CorreggiQuote::run = sub {
+        my (undef, $ctx) = @_;
+        ok $ctx->timeout_bypassed, 'bypass limitato alla nuova esecuzione confermata';
+        Time::HiRes::sleep(1.2);
+        return {success => 1, message => '10 completata'};
+    };
+    is $svc->execute($retry), 'completed', 'la 10 supera il timeout configurato';
+    my ($audit) = grep { ($_->{metadata}{operation} // '') eq 'timeout_bypass' }
+        @{$repository->list_events($retry)};
+    is $audit->{metadata}{source_execution_id}, $source, 'conferma tracciata con origine';
+
+    my $estimate = $svc->submit(correggi_quote => {database => 'quote_timeout'})->{id};
+    $repository->mark_finished($estimate, status => 'failed', exit_code => 1,
+        error_code => 'timeout_estimate_unavailable');
+    ok $svc->can_bypass_timeout($repository->get_execution($estimate)),
+        'anche una stima non disponibile offre l override';
 };
 
 subtest 'controlli automatici nel worker e nella consultazione web/API' => sub {

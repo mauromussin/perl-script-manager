@@ -15,6 +15,7 @@
     <nav>
       <a href="<%= url_for 'catalog' %>">Procedure</a>
       <a href="<%= url_for 'executions' %>">Storico</a>
+      <a href="<%= url_for 'dashboard' %>">Cruscotto</a>
     </nav>
   </header>
   <main>

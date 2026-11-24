@@ -250,6 +250,28 @@ sub validation_timing_events ($self, $target, $exclude_id, $code, $operation) {
     }, $code, $exclude_id, $target, $database, $operation, $operation)->expand->hashes->to_array;
 }
 
+sub dashboard_databases ($self) {
+    return $self->pg->db->query(q{
+        select distinct parameters->>'database' as database
+        from executions
+        where jsonb_typeof(parameters->'database') = 'string'
+          and length(parameters->>'database') > 0
+        order by database
+    })->arrays->map(sub { $_->[0] })->to_array;
+}
+
+sub dashboard_executions ($self, $database) {
+    return $self->pg->db->query(q{
+        select e.id, p.code as procedure_code, p.name as procedure_name, e.status,
+          e.parameters->>'date_from' as date_from, e.parameters->>'date_to' as date_to,
+          to_char(e.finished_at at time zone 'Europe/Rome', 'DD/MM/YYYY') as finished_date,
+          to_char(e.requested_at at time zone 'Europe/Rome', 'DD/MM/YYYY HH24:MI:SS') as requested_date
+        from executions e join procedures p on p.id = e.procedure_id
+        where e.parameters->>'database' = ?
+        order by e.requested_at desc, e.queue_order desc nulls last, e.id desc
+    }, $database)->hashes->to_array;
+}
+
 sub list_executions ($self, %f) {
     my (@where, @bind);
     if (defined $f{id} && length $f{id}) {

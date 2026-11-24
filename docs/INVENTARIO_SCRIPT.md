@@ -627,6 +627,10 @@ procedure eseguibili dell'applicazione.
   Database e aeroporto LIMC/LIML/LIME/LIPO; intervallo facoltativo su
   data_ora_arr, skip giornaliero e overwrite comuni. Nessun filtro
   aeroporto sulle tracce: database coerente con il contesto scelto.
+  Stima preventiva del salvataggio dalle misure strutturate di esecuzioni
+  10 concluse; se manca lo storico o la stima supera il timeout, nessuna
+  scrittura inizia finche l'utente non conferma la riesecuzione senza timeout.
+  La conferma e disponibile anche dopo un timeout reale della 10.
   Provenienza 09 completata obbligatoria; verifica aeroporto, coordinate,
   quota ARP e impronta pressione/temperatura. Modifiche successive o righe
   duplicate rendono il giorno non verificabile. Nessun uso cieco di meteo
@@ -634,6 +638,12 @@ procedure eseguibili dell'applicazione.
 - Salvataggio: analisi completa prima degli UPDATE; tutti gli A_m delle
   battute eleggibili vengono ricalcolati da Z_m, anche valori parziali
   preesistenti su bt=2, per recuperare retry senza dati obsoleti.
+  Analisi delle battute per gruppi di 100 tracce; aggiornamenti CASE in
+  lotti da massimo 500 righe, stato 3 aggiornato solo dopo tutte le quote
+  della traccia. Check cancellazione per gruppo/lotto, non per singola riga.
+  La ricerca meteo giornaliera usa intervalli DATETIME per sfruttare
+  l'indice data_ora. La durata del salvataggio e le operazioni SQL vengono
+  registrate per stimare le esecuzioni successive.
   Overwrite include bt=2/3 e azzera A_m solo delle tracce utilizzabili,
   mai di quelle saltate. bt=3 solo dopo le scritture della traccia.
   Nessuna modifica H_m/Z_m/hmod, pista, SID o validation delle battute.
@@ -651,9 +661,11 @@ procedure eseguibili dell'applicazione.
   esplicitamente 10/Sovrascrivi dopo il nuovo meteo.
 - Verifiche: t/unit/correggi_quote.t estrae la formula originale e confronta
   risultati, esponente, quote sorgente, negativi e dominio.
+  t/unit/correggi_quote_preflight.t verifica stime, assenza storico e override;
   t/integration/carica_meteo.t verifica su database temporanei ora contenente,
   ARP, filtri A/D e battute, date, skip/overwrite/retry, mancata provenienza,
-  meteo modificato, metadati incoerenti, errori, annullamento, blocco e form.
+  meteo modificato, metadati incoerenti, aggiornamenti oltre il lotto,
+  numero di query, errori, annullamento, blocco e form.
   Verifica inoltre quote API alle soglie esatte 600/5000/10000/300000.
   t/integration/validation_window.t verifica reset upstream anche da bt=3.
   Nessuna scrittura operativa, nuova dipendenza o deploy.

@@ -21,9 +21,10 @@ plan skip_all => 'Richiede TEST_ONLINE e TEST_MYSQL=1'
 {
     package WeatherStatement;
     use Mojo::Base -base, -signatures;
-    has [qw(statement owner)];
+    has [qw(statement owner sql)];
     sub execute ($self, @values) {
         my $r = $self->statement->execute(@values);
+        push @{$self->owner->writes}, $self->sql;
         die "write failed after insert\n" if $self->owner->fail_write;
         return $r;
     }
@@ -35,16 +36,24 @@ plan skip_all => 'Richiede TEST_ONLINE e TEST_MYSQL=1'
     has 'db';
     has fail_write => 0;
     has fail_update => 0;
+    has writes => sub { [] };
+    has selects => sub { [] };
     sub selectrow_arrayref ($self, @args) { return [233.782] }
     sub selectcol_arrayref ($self, @args) { return $self->db->selectcol_arrayref(@args) }
-    sub selectall_arrayref ($self, @args) { return $self->db->selectall_arrayref(@args) }
+    sub selectall_arrayref ($self, $sql, @args) {
+        push @{$self->selects}, $sql;
+        return $self->db->selectall_arrayref($sql, @args);
+    }
     sub selectrow_array ($self, @args) { return $self->db->selectrow_array(@args) }
     sub do ($self, @args) {
+        push @{$self->writes}, $args[0];
         my $result = $self->db->do(@args);
         die "write failed after update\n" if $self->fail_update;
         return $result;
     }
-    sub prepare ($self, @args) { return WeatherStatement->new(statement => $self->db->prepare(@args), owner => $self) }
+    sub prepare ($self, $sql, @args) {
+        return WeatherStatement->new(statement => $self->db->prepare($sql, @args), owner => $self, sql => $sql);
+    }
     sub disconnect ($self) { return $self->db->disconnect }
 }
 {
@@ -87,11 +96,12 @@ $admin->do(q{
 $admin->do(q{CREATE TABLE meteo_cgp (data_ora DATETIME, temperatura_C DOUBLE) ENGINE=MyISAM});
 $admin->do(q{CREATE TABLE flay (
     row_id INT PRIMARY KEY, data_ora_arr DATETIME, data_ora_italy DATETIME,
-    validation_fl CHAR(1), validation_bt INT, flay_operation CHAR(1), pista CHAR(3), sid CHAR(5)
+    validation_fl CHAR(1), validation_bt INT, flay_operation CHAR(1), pista CHAR(3), sid CHAR(5),
+    KEY k_validation_bt (validation_bt), KEY k_data (data_ora_arr)
 ) ENGINE=MyISAM});
 $admin->do(q{CREATE TABLE battute (
     row_id INT PRIMARY KEY, flay_id INT, time_italy DATETIME, validation CHAR(1),
-    H_m DOUBLE, Z_m DOUBLE, A_m DOUBLE, hmod CHAR(1)
+    H_m DOUBLE, Z_m DOUBLE, A_m DOUBLE, hmod CHAR(1), KEY k_flay (flay_id)
 ) ENGINE=MyISAM});
 $admin->do(q{INSERT INTO meteo_cgp VALUES ('2025-01-15 12:00:00', 77)});
 for my $day ('2025-01-14', '2025-01-15', '2025-01-17') {
@@ -99,6 +109,7 @@ for my $day ('2025-01-14', '2025-01-15', '2025-01-17') {
 }
 my $output = tempdir(CLEANUP => 1);
 my $last_id;
+my $last_normalize_db;
 sub run_weather (%options) {
     my $weather = delete $options{weather} // TestOpenMeteo->new;
     my $fail_write = delete $options{fail_write} // 0;
@@ -126,18 +137,28 @@ sub snapshot () { return $admin->selectall_arrayref('SELECT * FROM meteo ORDER B
 sub count_day ($day) {
     return $admin->selectrow_array('SELECT COUNT(*) FROM meteo WHERE DATE(data_ora)=?', undef, $day);
 }
+sub seed_quote_timing () {
+    my $target = join ':', lc($ENV{MYSQL_HOST}), $ENV{MYSQL_PORT} // 3306, $schema;
+    my $id = $repo->create_execution(procedure_code => 'correggi_quote', requested_by => 'preflight-test',
+        parameters => {database => $schema}, queue_target => $target);
+    $repo->add_event($id, 'info', 'Salvataggio 10 misurato: 100 operazioni SQL in 10 secondi',
+        metadata => {operation => 'correggi_quote_batch_saving_v1', units => 100, seconds => 10});
+    $repo->mark_finished($id, status => 'completed', exit_code => 0);
+}
 sub run_normalize (%options) {
     my $fail_update = delete $options{fail_update} // 0;
     my $cancel = delete $options{cancel};
+    seed_quote_timing();
     $last_id = $repo->create_execution(procedure_code => 'test_sum', requested_by => 'normalize-test');
     $repo->mark_running($last_id);
     $repo->request_cancel($last_id) if $cancel;
     my $ctx = WeatherContext->new(execution_id => $last_id, repo => $repo,
         output_root => $output, retention_days => 7, logger => Log::Any->get_logger);
+    $last_normalize_db = WeatherDatabase->new(db => DBI->connect("$dsn;database=$schema",
+        $ENV{MYSQL_USER}, $ENV{MYSQL_PASSWORD}, {RaiseError => 1, PrintError => 0, AutoCommit => 1}),
+        fail_update => $fail_update);
     my $command = ScriptManager::Command::CorreggiQuote->new(connect_db => sub {
-        my $db = DBI->connect("$dsn;database=$schema", $ENV{MYSQL_USER}, $ENV{MYSQL_PASSWORD},
-            {RaiseError => 1, PrintError => 0, AutoCommit => 1});
-        return WeatherDatabase->new(db => $db, fail_update => $fail_update);
+        return $last_normalize_db;
     });
     my $result = eval { $command->run($ctx, {
         database => $schema, airport => 'LIMC', date_from => '2025-01-15', date_to => '2025-01-15', %options}) };
@@ -407,6 +428,30 @@ subtest 'richiesta reale Open-Meteo e persistenza isolata (opt-in)' => sub {
     my $audit = decode_json(path($output, $last_id, 'meteo-open-meteo.json')->slurp);
     like $audit->{batches}[0]{request}, qr{https://archive-api.open-meteo.com/v1/archive};
     is $audit->{batches}[0]{response}{elevation}, 233.782;
+};
+
+subtest '10: letture raggruppate e aggiornamenti a lotti con misura del salvataggio' => sub {
+    run_weather(overwrite => 1, date_from => '2025-01-20', date_to => '2025-01-20');
+    $admin->do('INSERT INTO flay VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        undef, 100, '2025-01-20 01:37:00', '2025-01-20 01:00:00', 'Y', 2, 'A', '29', 'KEEP');
+    my $insert = $admin->prepare(
+        'INSERT INTO battute VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
+    for my $n (1 .. 1201) {
+        $insert->execute(10000 + $n, 100, '2025-01-20 01:00:00', 'Y', 1200, 1000, undef, undef);
+    }
+    $insert->finish;
+
+    my $result = run_normalize(overwrite => 1, date_from => '2025-01-20', date_to => '2025-01-20');
+    is $result->{data}{hits}, 1201;
+    my @batch_updates = grep { /^UPDATE battute SET A_m = CASE row_id/ } @{$last_normalize_db->writes};
+    is scalar @batch_updates, 3, '1201 quote salvate in tre UPDATE (massimo 500 righe ciascuno)';
+    my @grouped_reads = grep { /^SELECT flay_id, row_id, Z_m FROM battute WHERE flay_id IN/ }
+        @{$last_normalize_db->selects};
+    is scalar @grouped_reads, 1, 'battute lette con una query per il gruppo di tracce';
+    my ($metric) = grep { ($_->{metadata}{operation} // '') eq 'correggi_quote_batch_saving_v1' }
+        @{$repo->list_events($last_id)};
+    is $metric->{metadata}{units}, 5, 'la misura usa query batch, reset e avanzamento stato come unita';
+    ok $metric->{metadata}{seconds} > 0, 'durata effettiva del salvataggio registrata';
 };
 
 done_testing;

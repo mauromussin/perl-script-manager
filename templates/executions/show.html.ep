@@ -49,6 +49,8 @@
 <div class="alert" role="alert">
 % if (($execution->{error_code} // '') eq 'timeout_estimate_unavailable') {
   <strong>Durata non stimabile: manca uno storico misurabile. Vuoi rieseguire senza limite di tempo?</strong>
+% } elsif (($execution->{error_code} // '') eq 'timed_out') {
+  <strong>L'esecuzione precedente ha raggiunto il timeout configurato. Vuoi rieseguire senza limite di tempo?</strong>
 % } else {
   <strong>La durata stimata supera il timeout. Vuoi rieseguire senza limite di tempo?</strong>
   <p>La stima e prudenziale, non una durata certa.</p>
