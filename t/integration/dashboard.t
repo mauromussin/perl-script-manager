@@ -69,6 +69,8 @@ subtest 'filtri e heatmap leggono tutto lo storico, senza limite di pagina' => s
         ->text_like('tr[data-procedure=rettifica_quote] td[data-month=3] a span:last-child', qr/24\/11\/2026/)
         ->text_like("$base td[data-month=4] a span:last-child", qr/Non conclusa/)
         ->text_like("$base td[data-month=1] a span:last-child", qr/01\/11\/2026/)
+        ->attr_like("$base td[data-month=1] a", 'title', qr/Riuscita; completamento: 01\/11\/2026/)
+        ->attr_like("$base td[data-month=4] a", 'title', qr/Accodata; completamento: Non conclusa/)
         ->element_exists("table.dashboard-unknown a[href=\"/executions/$missing\"]")
         ->text_like('[role=alert]', qr/1 esecuzioni senza intervallo/);
     is $t->tx->res->dom->find("$base td")->size, 12, 'esattamente dodici mesi';

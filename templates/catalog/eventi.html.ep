@@ -1,0 +1,60 @@
+% layout 'default';
+% title $procedure->{name};
+<h1><%= $procedure->{name} %></h1>
+<p><%= $procedure->{description} %></p>
+% if (@$errors) {
+<div class="alert" role="alert">
+  <strong>Impossibile procedere:</strong>
+  <ul>
+% for my $e (@$errors) {
+    <li><%= $e->{path} %> <%= $e->{message} %></li>
+% }
+  </ul>
+</div>
+% }
+<form method="get" action="<%= url_for 'procedure', code => $procedure->{code} %>" class="filters">
+  <label for="eventi-database">Database MySQL</label>
+  <input id="eventi-database" name="database" value="<%= $values->{database} // '' %>" required pattern="[A-Za-z0-9_]{1,64}" maxlength="64">
+  <label for="eventi-airport">Aeroporto</label>
+  <select id="eventi-airport" name="airport" required>
+% for my $airport (qw(LIMC LIML LIME LIPO)) {
+    <option value="<%= $airport %>"<%= ($values->{airport} // '') eq $airport ? ' selected' : '' %>><%= $airport %></option>
+% }
+  </select>
+  <button type="submit">Cerca file e stazioni</button>
+</form>
+% if ($preview) {
+<p>Associare ogni file a una stazione; sono incluse anche quelle senza aeroporto collegato.
+  Tutti i file elencati saranno importati. Se un file cambia, ripetere la ricerca.</p>
+<form method="post" action="<%= url_for 'procedure_run', code => $procedure->{code} %>">
+  <%= csrf_field %>
+  <input type="hidden" name="database" value="<%= $values->{database} %>">
+  <input type="hidden" name="airport" value="<%= $values->{airport} %>">
+  <table>
+    <thead><tr><th scope="col">File TXT</th><th scope="col">Stazione</th></tr></thead>
+    <tbody>
+% for my $i (0 .. $#{$preview->{files}}) {
+%   my $file = $preview->{files}[$i];
+%   my $previous = ref $values->{files} eq 'ARRAY' && ref $values->{stations} eq 'ARRAY'
+%       && ($values->{files}[$i] // '') eq $file->{name} ? ($values->{stations}[$i] // '') : '';
+    <tr>
+      <td><%= $file->{name} %>
+        <input type="hidden" name="files" value="<%= $file->{name} %>">
+        <input type="hidden" name="hashes" value="<%= $file->{sha256} %>">
+      </td>
+      <td>
+        <select name="stations" required aria-label="Stazione per <%= $file->{name} %>">
+          <option value="">Seleziona stazione</option>
+%   for my $station (@{$preview->{stations}}) {
+%     my $station_value = $station->{row_id} . ':' . ($station->{c_cab} // '');
+          <option value="<%= $station_value %>"<%= $previous eq $station_value ? ' selected' : '' %><%= defined $station->{c_cab} ? '' : ' disabled' %>><%= $station->{nome} %> (codice <%= $station->{c_cab} // 'mancante' %><%= defined $station->{aeroporto} ? '' : ', aeroporto non associato' %>)</option>
+%   }
+        </select>
+      </td>
+    </tr>
+% }
+    </tbody>
+  </table>
+  <p><button type="submit">Importa tutti i file</button></p>
+</form>
+% }

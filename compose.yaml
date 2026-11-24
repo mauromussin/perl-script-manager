@@ -7,12 +7,14 @@ x-app-env: &app-env
   SCRIPT_MANAGER_WORKER_JOBS: ${SCRIPT_MANAGER_WORKER_JOBS:-2}
   SCRIPT_MANAGER_DEBUG_OPERATIONS: ${SCRIPT_MANAGER_DEBUG_OPERATIONS:-0}
   FILE_OUT_ROOT: ${FILE_OUT_ROOT:-E:\FILE_OUT}
+  FILE_TXT_ROOT: ${FILE_TXT_ROOT:-E:\FILE_TXT}
   MYSQL_HOST: ${MYSQL_HOST:-}
   MYSQL_PORT: ${MYSQL_PORT:-3306}
   MYSQL_USER: ${MYSQL_USER:-}
   MYSQL_PASSWORD: ${MYSQL_PASSWORD:-}
   MRT_CONFIG_FILE: /app/config/local/MRT.json
   SCRIPT_MANAGER_OUT_ROOT: /app/var/input
+  SCRIPT_MANAGER_TXT_ROOT: /app/var/input-txt
   TZ: Europe/Rome
 
 x-production-app: &production-app
@@ -26,6 +28,12 @@ x-production-app: &production-app
     - type: bind
       source: ${FILE_OUT_ROOT:-E:\FILE_OUT}
       target: /app/var/input
+      read_only: true
+      bind:
+        create_host_path: false
+    - type: bind
+      source: ${FILE_TXT_ROOT:-E:\FILE_TXT}
+      target: /app/var/input-txt
       read_only: true
       bind:
         create_host_path: false
@@ -79,6 +87,12 @@ services:
         read_only: true
         bind:
           create_host_path: false
+      - type: bind
+        source: ${FILE_TXT_ROOT:-E:\FILE_TXT}
+        target: /app/var/input-txt
+        read_only: true
+        bind:
+          create_host_path: false
     depends_on:
       database:
         condition: service_healthy
@@ -100,6 +114,12 @@ services:
       - type: bind
         source: ${FILE_OUT_ROOT:-E:\FILE_OUT}
         target: /app/var/input
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${FILE_TXT_ROOT:-E:\FILE_TXT}
+        target: /app/var/input-txt
         read_only: true
         bind:
           create_host_path: false

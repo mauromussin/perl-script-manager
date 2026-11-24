@@ -670,6 +670,47 @@ procedure eseguibili dell'applicazione.
   t/integration/validation_window.t verifica reset upstream anche da bt=3.
   Nessuna scrittura operativa, nuova dipendenza o deploy.
 
+## 12-carica_eventi_cmp.pl
+
+- Percorso: `legacy/scripts/12-carica_eventi_cmp.pl`.
+- Scopo: caricare eventi acustici nella tabella MySQL `st_eventi_cmp`.
+- Stato: in migrazione; lo script legacy non e stato modificato.
+- Modalita di avvio: CLI interattiva o con opzioni; password richiesta da terminale.
+- Parametri: host, porta, database, utente, file, ID centralina, tabelle opzionali,
+  `--dry-run`, `--help`.
+- Input: TXT UTF-8 separato da `;`, con titolo, data, ora iniziale,
+  intestazione e righe con secondi trascorsi, durata e misure numeriche.
+- Output: riepilogo, avvisi per righe scartate, inserimenti MySQL.
+- File letti/scritti: il file indicato; nessun file scritto.
+- Database e tabelle dello script legacy: MySQL, `st_eventi_cmp` e
+  `anagrafica.centraline_cmp` per il controllo dell'ID.
+- Riferimento delle stazioni nella procedura integrata: `anagrafica.stazioni`,
+  collegata ad `anagrafica.aeroporti` tramite `stazioni.aeroporti_id`.
+  La selezione identifica la riga con `stazioni.row_id`, mentre il valore salvato
+  in `st_eventi_cmp.id_centralina_cmp` e `stazioni.c_cab`, non `row_id`.
+  Sono mostrate le stazioni dell'aeroporto scelto e quelle senza aeroporto
+  associato; codici `c_cab` mancanti, modificati o ambigui bloccano l'importazione.
+- Variabili d'ambiente: fuso orario locale del processo; nessuna letta esplicitamente.
+- Moduli: DBI, DBD::mysql, Getopt::Long, Time::Local, POSIX, File::Spec;
+  Term::ReadKey facoltativo. Programmi esterni: nessuno.
+- Durata: non misurata. Codici: 0 riuscita, 1 errore fatale, 2 errori SQL gestiti.
+- Effetti: AutoCommit e `INSERT IGNORE`; gli errori possono lasciare dati parziali.
+- Rischi: `INSERT IGNORE` puo nascondere conversioni e non elimina i duplicati
+  senza indice univoco; righe invalide sono scartate; la password puo essere visibile.
+- Test: caratterizzazione in `t/characterization/carica_eventi_cmp.t`; test della
+  nuova implementazione in `t/unit/eventi_cmp.t` e `t/integration/eventi_cmp.t`.
+- Destinazione: `ScriptManager::Command::CaricaEventiCMP` e
+  `ScriptManager::Service::EventiCMP`.
+- Differenze approvate: importazione di tutti i TXT, associazione esplicita a
+  stazioni dell'aeroporto o senza aeroporto, e orari gia italiani. L'uso di
+  `stazioni.c_cab` e coerente con le query di correlazione legacy. Accettato
+  anche il formato osservato con titolo, intestazione e data/ora su ogni riga.
+  Sono verificate tutte le intestazioni e le righe prima delle scritture, senza
+  scarti silenziosi. I duplicati sono identificati da codice stazione, data/ora,
+  durata e Leq; senza indice univoco si usa un lock MySQL. Un file modificato
+  dopo l'associazione blocca l'esecuzione. Non sono state eseguite importazioni
+  sui dati operativi; la durata reale e da misurare.
+
 ## Controlli temporali comuni dei comandi migrati 03-08 e 10
 
 - `date_from` e `date_to` facoltativi ma entrambi richiesti se uno e presente,

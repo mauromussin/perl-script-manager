@@ -44,7 +44,7 @@
 <div class="alert" role="alert"><strong>Warning:</strong> <%= $warning %></div>
 % }
 
-<div class="heat-scroll" role="region" aria-label="Heatmap mensile" tabindex="0">
+<div class="heat-container" role="region" aria-label="Heatmap mensile">
 <table class="heatmap">
   <caption><%= $database %> &mdash; anno dei dati <%= $year %></caption>
   <thead>
@@ -63,7 +63,7 @@
       <td data-month="<%= $month %>">
 %     if ($e) {
         <a class="heat-cell heat-<%= $e->{tone} %>" href="<%= url_for 'execution', id => $e->{id} %>"
-          title="<%= $e->{date_from} %> - <%= $e->{date_to} %>; richiesta <%= $e->{requested_date} %>">
+          title="<%= $e->{status_label} %>; completamento: <%= $e->{finished_date} // 'Non conclusa' %>; intervallo: <%= $e->{date_from} %> - <%= $e->{date_to} %>; richiesta <%= $e->{requested_date} %>">
           <span><%= $e->{status_label} %></span>
           <span><%= $e->{finished_date} // 'Non conclusa' %></span>
         </a>

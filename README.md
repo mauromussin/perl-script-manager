@@ -12,6 +12,8 @@ Bianco: nessuna richiesta; verde: completata; rosso: fallita o annullata;
 giallo: timeout; grigio: accodata, in corso o annullamento richiesto.
 Ogni cella indica la data di conclusione italiana, se disponibile, e collega
 al dettaglio dell'esecuzione. La data puo essere successiva all'anno dei dati.
+Sugli schermi stretti le celle mostrano il colore: selezionarle per consultare
+stato e data nel dettaglio.
 
 Il riepilogo riflette lo storico conservato nell'applicazione, non verifica
 direttamente i dati radar o le dipendenze tra procedure: un mese verde non
@@ -54,6 +56,28 @@ Il mount di default e `E:\FILE_OUT` sull'host Windows, esposto in sola lettura
 come `/app/var/input` sia ad app sia al worker (anche nei servizi di sviluppo).
 La cartella host deve esistere; Compose non la crea automaticamente.
 Per cambiarla impostare `FILE_OUT_ROOT` in `.env`.
+
+### Cartella degli eventi acustici
+
+La procedura 12 cerca ricorsivamente tutti i file `.txt` in `E:\FILE_TXT`,
+montata in sola lettura come `/app/var/input-txt` su app e worker, anche in
+sviluppo. La cartella deve esistere; `FILE_TXT_ROOT` in `.env` ne cambia il
+percorso sull'host. Dopo la ricerca scegliere una stazione per ogni file:
+sono disponibili quelle dell'aeroporto e quelle senza aeroporto associato.
+Il codice `c_cab` della stazione viene salvato in `id_centralina_cmp`.
+La ricerca va ripetuta se l'elenco o il contenuto dei file cambia.
+
+I TXT devono avere intestazione delle dieci colonne previste e data/ora italiana
+in ogni riga oppure il formato legacy con data, ora iniziale e secondi trascorsi.
+Nel formato legacy i secondi sono sommati alla mezzanotte in fuso Europe/Rome,
+come nello script originale, anche nei giorni di cambio dell'ora.
+I duplicati per codice stazione, data/ora, durata e Leq sono ignorati. Se manca
+l'indice univoco, il controllo usa un lock di scrittura MySQL. Sono necessari
+permessi di lettura dell'anagrafica e di scrittura (e, in tale caso, LOCK TABLES)
+sul database di destinazione. Le tabelle MyISAM non consentono rollback:
+errori, timeout o annullamento possono lasciare un'importazione parziale.
+
+### Selezione delle tracce radar
 
 Il parametro `folder` accetta `.` oppure una sottocartella relativa, per esempio
 `2026/novembre`. Quest'ultima corrisponde a `E:\FILE_OUT\2026\novembre` sull'host

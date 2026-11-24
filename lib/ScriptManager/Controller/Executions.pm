@@ -2,6 +2,7 @@ package ScriptManager::Controller::Executions;
 use Mojo::Base 'Mojolicious::Controller', -signatures;
 
 use Mojo::File 'path';
+use ScriptManager::Controller::Catalog ();
 use ScriptManager::Exception;
 
 my @STATUSES = qw(queued running completed failed cancel_requested cancelled timed_out);
@@ -15,6 +16,8 @@ sub create ($c) {
     my $input     = $validator->from_form($c->req->body_params);
     my $result    = $c->execution_service->submit($proc->{code}, $input, requested_by => $c->current_user);
 
+    return ScriptManager::Controller::Catalog::render_eventi($c, $proc, $input, $result->{errors})
+        if $result->{errors} && $proc->{code} eq 'carica_eventi_cmp';
     return $c->render(
         'catalog/show',
         procedure => $proc,
