@@ -269,6 +269,53 @@ subtest 'rollback fallito produce un evento CRITICAL' => sub {
     ok !$db->committed, 'nessun commit';
 };
 
+subtest 'timeout e confine commit InnoDB' => sub {
+    my $timeout = ScriptManager::Exception->new(code => 'timed_out', message => 'Timeout test');
+    for my $rollback_fails (0, 1) {
+        my $db = LoaderDatabase->new(rollback_fails => $rollback_fails);
+        my $ctx = LoaderContext->new;
+        my $loader = ScriptManager::Command::CaricaDB->new(connect_db => sub (@args) { $db });
+        no warnings qw(redefine once);
+        local *LoaderDatabase::do = sub { die $timeout };
+        eval { $loader->run($ctx, $params) };
+        ok(ScriptManager::Exception->caught($@, $rollback_fails ? 'mysql_recovery_required' : 'timed_out'),
+            $rollback_fails ? 'rollback fallito richiede verifica' : 'rollback riuscito mantiene il timeout');
+        if ($rollback_fails) {
+            ok scalar(grep { $_->[0] eq 'critical' && $_->[1] =~ /Rollback MySQL fallito/ } @{$ctx->events});
+        } else {
+            ok $db->rolled_back, 'rollback effettuato';
+        }
+    }
+    {
+        my $db = LoaderDatabase->new;
+        my $loader = ScriptManager::Command::CaricaDB->new(connect_db => sub (@args) { $db });
+        no warnings qw(redefine once);
+        local $SIG{ALRM} = sub { die $timeout };
+        local *LoaderDatabase::commit = sub ($self) {
+            is $SIG{ALRM}, 'IGNORE', 'segnale ignorato durante il commit';
+            is alarm(0), 0, 'timer disattivato prima del commit';
+            $self->committed(1);
+        };
+        alarm 60;
+        my $result = $loader->run(LoaderContext->new, $params);
+        alarm 0;
+        ok $result->{success} && $db->committed, 'commit completato';
+    }
+    {
+        my $db = LoaderDatabase->new;
+        my $loader = ScriptManager::Command::CaricaDB->new(connect_db => sub (@args) { $db });
+        no warnings qw(redefine once);
+        my $original_log = \&LoaderContext::log;
+        local *LoaderContext::log = sub ($self, @event) {
+            die "Errore dopo commit\n" if $event[1] eq 'Transazione MySQL confermata';
+            $original_log->($self, @event);
+        };
+        eval { $loader->run(LoaderContext->new(execution_id => 'test'), $params) };
+        ok(ScriptManager::Exception->caught($@, 'mysql_already_published'), 'commit gia avvenuto segnalato');
+        ok $db->committed && !$db->rolled_back, 'nessun falso rollback dopo commit';
+    }
+};
+
 subtest 'duplicati e warning annullano il caricamento' => sub {
     for my $db (LoaderDatabase->new(duplicate => 1),
                 LoaderDatabase->new(warnings => [['Warning', 1062, 'Duplicate entry']])) {

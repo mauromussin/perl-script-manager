@@ -182,6 +182,50 @@ subtest '08: conferma per stima eccessiva o assente, con stessa coda e parametri
     }
 };
 
+subtest '02: conferma esplicita solo dopo timeout reale' => sub {
+    local $ENV{MYSQL_HOST} = 'mysql.test';
+    local $ENV{MYSQL_PORT} = 3306;
+    my $service = $t->app->execution_service;
+    my $repo = $t->app->repo;
+    my $source = $service->submit(carica_db => {database => 'radar_web', folder => 'BGY_2026',
+        radar => 'lin_2026', merge_midnight => Mojo::JSON::false})->{id};
+    $repo->mark_finished($source, status => 'timed_out', exit_code => 1, error_code => 'timed_out');
+    my $endpoint = "/executions/$source/retry-without-timeout";
+    $t->get_ok("/executions/$source")->status_is(200)
+        ->element_exists('input[name=confirm_timeout_bypass][required]')
+        ->element_exists_not('input[name=confirm_timeout_bypass][checked]')
+        ->content_like(qr/non e idempotente/)
+        ->content_like(qr/verificare prima nei log e nel database/)
+        ->content_unlike(qr/stesse date e la stessa scelta Sovrascrivi/);
+    my $token = csrf();
+    $t->post_ok($endpoint => form => {confirm_timeout_bypass => 1})->status_is(403);
+    $t->post_ok($endpoint => form => {csrf_token => $token})->status_is(422);
+    $t->get_ok("/api/executions/$source")->status_is(200)
+        ->json_is('/timeout_bypass_available' => Mojo::JSON::true);
+    $t->post_ok($endpoint => form => {csrf_token => $token, confirm_timeout_bypass => 1})->status_is(302);
+    my ($retry) = $t->tx->res->headers->location =~ m{/executions/([0-9a-f-]+)};
+    my $execution = $repo->get_execution($retry);
+    isnt $retry, $source;
+    is_deeply $execution->{parameters}, $repo->get_execution($source)->{parameters};
+    ok $execution->{timeout_bypassed};
+    $t->get_ok("/executions/$retry")->status_is(200)
+        ->content_like(qr/Timeout disattivato per questa esecuzione/)
+        ->content_like(qr/esito del recupero/)
+        ->element_exists_not('input[name=confirm_timeout_bypass]');
+    for my $error (qw(mysql_recovery_required mysql_already_published)) {
+        $repo->mark_finished($source, status => 'failed', error_code => $error);
+        $t->get_ok("/executions/$source")->status_is(200)
+            ->element_exists_not('input[name=confirm_timeout_bypass]');
+        $t->post_ok($endpoint => form => {csrf_token => $token, confirm_timeout_bypass => 1})->status_is(409);
+    }
+    $repo->add_event($source, 'critical', 'Rollback fallito', metadata => {operation => 'rollback_failed'});
+    $repo->mark_finished($source, status => 'timed_out', error_code => 'timed_out');
+    $t->get_ok("/executions/$source")->status_is(200)
+        ->element_exists_not('input[name=confirm_timeout_bypass]')
+        ->content_like(qr/Riesecuzione senza timeout non disponibile/);
+    $t->post_ok($endpoint => form => {csrf_token => $token, confirm_timeout_bypass => 1})->status_is(409);
+};
+
 subtest '10: conferma per stima assente o timeout reale' => sub {
     local $ENV{MYSQL_HOST} = 'mysql.test';
     local $ENV{MYSQL_PORT} = 3306;

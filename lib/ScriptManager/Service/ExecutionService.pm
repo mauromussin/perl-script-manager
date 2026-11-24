@@ -21,7 +21,7 @@ sub submit ($self, $code, $input, %o) {
     if (defined $o{timeout_bypass_from}) {
         $source = $self->repo->get_execution($o{timeout_bypass_from});
         ScriptManager::Exception->throw('timeout_bypass_not_allowed',
-            'Il bypass richiede una procedura bloccata dal controllo preventivo')
+            'Il bypass richiede una procedura idonea bloccata dalla stima o dal timeout')
             unless $self->can_bypass_timeout($source) && $code eq $source->{procedure_code};
         $input = $source->{parameters};
     }
@@ -37,6 +37,9 @@ sub submit ($self, $code, $input, %o) {
                 && ($ENV{MYSQL_PORT} // 3306) > 0 && ($ENV{MYSQL_PORT} // 3306) <= 65535
                 && ($params->{database} // '') =~ /\A[A-Za-z0-9_]{1,64}\z/;
         $target = join ':', lc($ENV{MYSQL_HOST}), 0 + ($ENV{MYSQL_PORT} // 3306), $params->{database};
+        return {errors => [{path => '/database', message => 'Target MySQL cambiato: verificare i dati e inviare una nuova richiesta'}]}
+            if $source && $code eq 'carica_db'
+            && (!defined $source->{queue_target} || $source->{queue_target} ne $target);
     }
     my $id = $self->repo->create_execution(
         procedure_code => $code,
@@ -47,7 +50,8 @@ sub submit ($self, $code, $input, %o) {
     );
     $self->repo->add_event($id, 'info', 'Esecuzione registrata', event_type => 'state');
     $self->repo->add_event($id, 'warning',
-        'Conferma utente: controllo della stima e timeout reale disattivati per questa esecuzione; '
+        ($code eq 'carica_db' ? 'Conferma utente: timeout reale disattivato per questa esecuzione; '
+            : 'Conferma utente: controllo della stima e timeout reale disattivati per questa esecuzione; ')
         . 'possibili scritture parziali in caso di interruzione',
         event_type => 'state', metadata => {operation => 'timeout_bypass', source_execution_id => $source->{id}})
         if $source;
@@ -74,15 +78,18 @@ sub submit ($self, $code, $input, %o) {
 sub can_bypass_timeout ($self, $exec) {
     return 0 unless $exec;
     my $code = $exec->{procedure_code} // '';
-    return 0 unless $code eq 'valida_battute' || $code eq 'rettifica_quote' || $code eq 'correggi_quote';
+    return 0 unless $code eq 'carica_db' || $code eq 'valida_battute'
+        || $code eq 'rettifica_quote' || $code eq 'correggi_quote';
     my $proc = $self->registry->get($code);
     return 0 unless $proc && $proc->{queue_by_database} && !$exec->{timeout_bypassed};
-    my $estimate_rejected = $exec->{status} eq 'failed'
+    my $estimate_rejected = $code ne 'carica_db' && $exec->{status} eq 'failed'
         && (($exec->{error_code} // '') eq 'timeout_estimate'
             || ($code ne 'valida_battute' && ($exec->{error_code} // '') eq 'timeout_estimate_unavailable'));
-    my $timed_out_normalization = $code eq 'correggi_quote'
+    my $timed_out_retry = ($code eq 'carica_db' || $code eq 'correggi_quote')
         && $exec->{status} eq 'timed_out' && ($exec->{error_code} // '') eq 'timed_out';
-    return $estimate_rejected || $timed_out_normalization ? 1 : 0;
+    return 0 if $timed_out_retry && $code eq 'carica_db'
+        && $self->repo->has_import_retry_risk($exec->{id});
+    return $estimate_rejected || $timed_out_retry ? 1 : 0;
 }
 
 sub execute ($self, $id, $params = undef) {
@@ -109,7 +116,7 @@ sub execute ($self, $id, $params = undef) {
     my $execution_guard = $self->repo->lock_execution($id) or return;
     return unless $self->repo->mark_running($id);
 
-    my $bypassed = ($exec->{procedure_code} eq 'valida_battute'
+    my $bypassed = ($exec->{procedure_code} eq 'carica_db' || $exec->{procedure_code} eq 'valida_battute'
             || $exec->{procedure_code} eq 'rettifica_quote' || $exec->{procedure_code} eq 'correggi_quote')
         && $exec->{timeout_bypassed};
     my $ctx = ScriptManager::Service::Context->new(

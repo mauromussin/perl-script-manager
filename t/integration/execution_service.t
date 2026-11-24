@@ -462,6 +462,80 @@ subtest '08: conferma senza storico elimina timeout reale, non la cancellazione'
     is $svc->execute($retry), 'cancelled', 'bypass non disattiva la cancellazione';
 };
 
+subtest '02: bypass solo dopo timeout, con stessi parametri e coda' => sub {
+    local $ENV{MYSQL_HOST} = 'mysql.test';
+    local $ENV{MYSQL_PORT} = 3306;
+    my $app = TestHelper::mojo()->app;
+    my $svc = $app->execution_service;
+    my $repository = $app->repo;
+    my $input = {database => 'radar_timeout', folder => 'BGY_2026', radar => 'lin_2026',
+        merge_midnight => Mojo::JSON::false};
+    my $cancel_run = 0;
+    no warnings qw(redefine once);
+    local *ScriptManager::Command::Example::run = sub {
+        my (undef, $ctx) = @_;
+        Time::HiRes::sleep(1.2);
+        $repository->request_cancel($ctx->execution_id) if $cancel_run;
+        $ctx->check_cancel;
+        return {success => 1, message => '02 completata'};
+    };
+    my $source = $svc->submit(carica_db => $input)->{id};
+    is $svc->execute($source), 'timed_out', 'il timeout ordinario resta attivo';
+    my $original = $repository->get_execution($source);
+    ok $svc->can_bypass_timeout($original), 'conferma disponibile dopo timeout reale';
+    my $head = $svc->submit(carica_db => $input)->{id};
+    my $retry = $svc->submit(carica_db => {database => 'tampered'}, timeout_bypass_from => $source,
+        requested_by => 'confirmed-user')->{id};
+    my $execution = $repository->get_execution($retry);
+    is_deeply $execution->{parameters}, $original->{parameters}, 'parametri originali preservati';
+    is $execution->{queue_target}, $original->{queue_target}, 'stesso target';
+    is $execution->{queue_position}, 2, 'nessun salto della coda';
+    ok $execution->{timeout_bypassed}, 'bypass persistito';
+    is $svc->execute($retry), 'queued', 'il bypass non aggira la coda';
+    is $svc->cancel($head), 'cancelled';
+    is $svc->execute($retry), 'completed', 'la richiesta confermata supera il timeout';
+    my ($audit) = grep { ($_->{metadata}{operation} // '') eq 'timeout_bypass' }
+        @{$repository->list_events($retry)};
+    is $audit->{metadata}{source_execution_id}, $source, 'origine registrata';
+    is $execution->{requested_by}, 'confirmed-user', 'utente registrato';
+    unlike $audit->{message}, qr/stima/, 'nessun riferimento alla stima assente nella 02';
+    my $normal = $svc->submit(carica_db => $input)->{id};
+    ok !$repository->get_execution($normal)->{timeout_bypassed}, 'riesecuzione normale non eredita il bypass';
+    is $svc->execute($normal), 'timed_out', 'timeout attivo sulle richieste ordinarie';
+    $cancel_run = 1;
+    my $cancelled = $svc->submit(carica_db => {}, timeout_bypass_from => $source)->{id};
+    is $svc->execute($cancelled), 'cancelled', 'cancellazione ancora attiva';
+
+    {
+        local $ENV{MYSQL_HOST} = 'other.test';
+        my $result = $svc->submit(carica_db => {}, timeout_bypass_from => $source);
+        like $result->{errors}[0]{message}, qr/Target MySQL cambiato/, 'server cambiato rifiutato';
+    }
+    for my $case (
+        ['failed', 'timeout_estimate'],
+        ['failed', 'timeout_estimate_unavailable'],
+        ['failed', 'mysql_recovery_required'],
+        ['failed', 'mysql_already_published'],
+        ['failed', 'timed_out'],
+        ['timed_out', 'mysql_recovery_required'],
+    ) {
+        $repository->mark_finished($source, status => $case->[0], error_code => $case->[1]);
+        ok !$svc->can_bypass_timeout($repository->get_execution($source)),
+            "bypass rifiutato per $case->[0]/$case->[1]";
+        eval { $svc->submit(carica_db => {}, timeout_bypass_from => $source) };
+        ok(ScriptManager::Exception->caught($@, 'timeout_bypass_not_allowed'), 'invio rifiutato');
+    }
+    for my $operation (qw(commit commit_complete rollback_failed myisam_publish_complete)) {
+        my $old = $svc->submit(carica_db => $input)->{id};
+        $repository->add_event($old, 'warning', 'test evento precedente', metadata => {operation => $operation});
+        $repository->mark_finished($old, status => 'timed_out', error_code => 'timed_out');
+        ok !$svc->can_bypass_timeout($repository->get_execution($old)),
+            "bypass rifiutato per timeout storico con evento $operation";
+        eval { $svc->submit(carica_db => {}, timeout_bypass_from => $old) };
+        ok(ScriptManager::Exception->caught($@, 'timeout_bypass_not_allowed'), 'invio rifiutato');
+    }
+};
+
 subtest '10: conferma puo riprendere una normalizzazione terminata per timeout' => sub {
     local $ENV{MYSQL_HOST} = 'mysql.test';
     my $app = TestHelper::mojo()->app;

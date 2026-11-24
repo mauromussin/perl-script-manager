@@ -309,7 +309,7 @@ sub run ($self, $ctx, $params) {
     my %loaded_airports;
     $ctx->log(info => "Radar $radar->{id}, revisione " . ($radar->{revision_date} // 'non documentata')
         . ", origine $radar->{x_m}/$radar->{y_m}; record duplicati destinati a battute_doppie");
-    my $transaction_started = 0;
+    my ($transaction_started, $committed) = (0, 0);
     my $ok = eval {
         if ($session) {
             $session->prepare;
@@ -441,7 +441,12 @@ sub run ($self, $ctx, $params) {
             $self->merge_midnight($ctx, $db, \%loaded_airports) if $merge_midnight;
             $ctx->check_cancel;
             $ctx->log(info => 'Conferma transazione MySQL (commit)', operation => 'commit');
-            $db->commit;
+            {
+                local $SIG{ALRM} = 'IGNORE';
+                alarm 0;
+                $db->commit;
+                $committed = 1;
+            }
             $ctx->log(info => 'Transazione MySQL confermata', operation => 'commit_complete');
         }
         $ctx->log(info => 'Unione a mezzanotte disabilitata') unless $params->{merge_midnight};
@@ -470,6 +475,11 @@ sub run ($self, $ctx, $params) {
                         . "consultare i log app/worker per l'esecuzione " . $ctx->execution_id,
                 );
             }
+        } elsif ($committed) {
+            $self->logger->error('[ERROR] [exec=' . $ctx->execution_id . "] Errore dopo il commit MySQL: $error");
+            $error = ScriptManager::Exception->new(
+                code => 'mysql_already_published',
+                message => 'Caricamento MySQL gia confermato; verificare i dati prima di riprovare');
         } elsif ($transaction_started) {
             $ctx->log(error => 'Caricamento interrotto: annullamento transazione MySQL (rollback)', operation => 'rollback');
             my $rolled_back = eval { $db->rollback; 1 };
@@ -478,6 +488,10 @@ sub run ($self, $ctx, $params) {
             } else {
                 $ctx->log(critical => 'Rollback MySQL fallito: verificare il database prima di riprovare',
                     operation => 'rollback_failed');
+                $error = ScriptManager::Exception->new(
+                    code => 'mysql_recovery_required',
+                    message => 'Rollback MySQL non verificato dopo il timeout: verificare il database prima di riprovare')
+                    if ScriptManager::Exception->caught($error, 'timed_out');
             }
         }
         die $error;

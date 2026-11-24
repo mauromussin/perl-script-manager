@@ -370,6 +370,13 @@ sub list_events ($self, $id) {
         $id)->expand->hashes->to_array;
 }
 
+sub has_import_retry_risk ($self, $id) {
+    return $self->pg->db->query(
+        q{select 1 from execution_events where execution_id = ?
+          and metadata->>'operation' in (?, ?, ?, ?) limit 1},
+        $id, qw(commit commit_complete rollback_failed myisam_publish_complete))->hash ? 1 : 0;
+}
+
 sub latest_events ($self, $id) {
     return $self->pg->db->query(
         'select id, level, event_type, message, metadata, created_at from execution_events '

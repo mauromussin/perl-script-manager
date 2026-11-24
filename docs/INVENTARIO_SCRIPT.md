@@ -52,6 +52,11 @@ non descritti qui restano da inventariare.
 	a tre tabelle. È un riferimento per i parametri condivisi, non una prova di
 	equivalenza funzionale delle altre varianti.
 - Configurazione dei profili: `config/02-carica-variants.yml`.
+- Nell'integrazione applicativa, dopo un timeout effettivo si puo confermare
+  una nuova 02 senza timeout, con stessi parametri e coda. Prima verificare
+  log, recupero e database: un import gia pubblicato non e idempotente.
+  Errori di recupero o dati gia pubblicati non abilitano l'override.
+  Per InnoDB il timer e disattivato prima del commit anche senza override.
 
 | Profilo | File | Origine radar indicata | Origine coordinate X / Y (m) | Gestione tracce duplicate |
 |---|---|---|---:|---|

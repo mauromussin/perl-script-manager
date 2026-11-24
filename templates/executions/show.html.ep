@@ -42,7 +42,11 @@
 <div class="alert" role="alert">
   <strong>Timeout disattivato per questa esecuzione con conferma utente.</strong>
   Non viene applicato il limite di durata configurato. La cancellazione resta disponibile;
+% if ($execution->{procedure_code} eq 'carica_db') {
+  in caso di interruzione verificare i log e l'esito del recupero prima di riprovare.
+% } else {
   eventuali scritture gia eseguite non vengono annullate.
+% }
 </div>
 % }
 % if ($can_bypass_timeout) {
@@ -55,16 +59,30 @@
   <strong>La durata stimata supera il timeout. Vuoi rieseguire senza limite di tempo?</strong>
   <p>La stima e prudenziale, non una durata certa.</p>
 % }
+% if ($execution->{procedure_code} eq 'carica_db') {
+  <p>La conferma crea una nuova richiesta in coda con gli stessi parametri e senza timeout.
+    I file OUT saranno riletti e potrebbero essere cambiati. La riesecuzione non e idempotente:
+    verificare prima nei log e nel database l'esito del rollback o recupero della richiesta precedente;
+    dati gia pubblicati possono produrre ulteriori battute doppie.</p>
+% } else {
   <p>La conferma crea una nuova richiesta
     nella coda con lo stesso database, le stesse date e la stessa scelta Sovrascrivi.
     Disattiva sia il blocco della stima sia il timeout reale, solo per la nuova esecuzione.
     Cancellazioni o errori possono lasciare scritture parziali.</p>
+% }
   <form method="post" action="<%= url_for 'execution_timeout_bypass', id => $execution->{id} %>">
     <%= csrf_field %>
     <label><input type="checkbox" name="confirm_timeout_bypass" value="1" required>
       Confermo di voler disattivare il timeout per questa riesecuzione</label>
     <button type="submit">Conferma e riesegui senza timeout</button>
   </form>
+</div>
+% }
+% if ($execution->{procedure_code} eq 'carica_db' && $execution->{status} eq 'timed_out'
+%     && !$can_bypass_timeout && !$execution->{timeout_bypassed}) {
+<div class="alert" role="alert">
+  Riesecuzione senza timeout non disponibile: verificare nei log e nel database
+  l'esito del commit o del recupero prima di procedere.
 </div>
 % }
 

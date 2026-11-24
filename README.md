@@ -747,6 +747,20 @@ Remove-Item Env:\TEST_MYSQL
 I motori misti non sono supportati. InnoDB mantiene la gestione transazionale;
 MyISAM usa staging e compensazione, senza convertire le tabelle legacy.
 
+La 02 ha un timeout ordinario di 3600 secondi dall'avvio. Dopo un timeout
+effettivo, nel dettaglio e possibile confermare una nuova richiesta senza
+timeout, con gli stessi parametri e nella stessa coda. La scelta e registrata
+nel log e non si applica al normale Riesegui; la cancellazione rimane attiva.
+Non e disponibile per errori di recupero o dati gia pubblicati.
+Per gli storici con timeout e log di commit, pubblicazione o rollback fallito,
+la conferma non e disponibile: verificare manualmente lo stato dei dati.
+Prima di confermare verificare log, recupero e dati nel database: ripetere
+un import gia pubblicato puo aggiungere battute doppie e i file OUT potrebbero
+essere cambiati. Un cambio di host o porta MySQL impedisce la conferma.
+Per InnoDB il timer viene disattivato immediatamente prima del commit, che
+puo quindi superare il limite anche nella richiesta ordinaria; un rollback
+fallito dopo timeout richiede una verifica e non offre il bypass.
+
 ### Record OUT con la stessa traccia
 
 Come nel caricatore legacy LIN 2026, la chiave della traccia e

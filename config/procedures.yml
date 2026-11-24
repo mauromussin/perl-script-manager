@@ -8,6 +8,8 @@ procedures:
       Carica i file OUT in MySQL. Scegli radar/revisione, unione a mezzanotte,
       database e sottocartella. Il codice ICAO nel nome identifica l'aeroporto;
       credenziali e host sono configurati sul server. I duplicati annullano il caricamento.
+      Dopo un timeout e possibile confermare una riesecuzione senza limite, verificando prima
+      il recupero e lo stato dei dati: la riesecuzione non e idempotente.
     enabled: true
     handler_class: ScriptManager::Command::CaricaDB
     queue_by_database: true
