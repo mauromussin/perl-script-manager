@@ -163,6 +163,18 @@ sub run ($self, $ctx, $params) {
                     }
                 }
             }
+            my $daily = $db->selectall_arrayref(
+                'SELECT DATE(st.data_ora) AS giorno, COUNT(*) AS eventi, '
+                . 'SUM(EXISTS (SELECT 1 FROM battute_eventi_cmp c WHERE c.evento_cmp_id=st.row_id)) AS correlati, '
+                . 'SUM(HOUR(st.data_ora) BETWEEN 0 AND 5 OR HOUR(st.data_ora)=23) AS eventi_notturni, '
+                . 'SUM((HOUR(st.data_ora) BETWEEN 0 AND 5 OR HOUR(st.data_ora)=23) '
+                . 'AND NOT EXISTS (SELECT 1 FROM battute_eventi_cmp c WHERE c.evento_cmp_id=st.row_id)) AS non_correlati_notturni '
+                . 'FROM st_eventi_cmp st WHERE st.id_centralina_cmp=? AND st.data_ora>=? '
+                . 'AND DATE(st.data_ora)<=? GROUP BY DATE(st.data_ora) ORDER BY DATE(st.data_ora)',
+                {Slice => {}}, $s->{code}, $start, $to);
+            $ctx->log(info => "Conteggi giornalieri stazione $s->{code}",
+                operation => 'correlation_daily_counts', station_code => 0 + $s->{code},
+                log_id => $log_id, days => $daily);
             my $summary = {station_id => $s->{id}, station_code => $s->{code}, shift => $s->{shift},
                 log_id => $log_id, events => scalar(@$events), correlated => $count, days => \%days};
             push @results, $summary;

@@ -96,9 +96,18 @@ PostgreSQL JSONB e scrive anche `anagrafica.correla_log`.
 Calcola LVA e LVAn per giorno, distinguendo eventi correlati e totale degli
 eventi: quest'ultimo corrisponde al valore chiamato non correlato dal legacy.
 Il totale viene salvato anche per giorni senza correlazioni. Dopo il
-completamento, **Verifica e attualizza LVA/LVAn** mostra i valori e consente
-di accodare separatamente l'attualizzazione dei risultati selezionati.
-I giorni senza nuovi risultati conservano i valori attuali precedenti.
+completamento, **Verifica e attualizza LVA/LVAn** mostra per ogni stazione e
+giorno LVAnc, LVAc, differenza, eventi correlati/totali (Ec/E), LVAn
+correlato e totale, numero di eventi notturni senza abbinamento e numero
+totale di eventi notturni. La notte comprende le ore 23:00-05:59 dello stesso
+giorno. Valori e percentuali sono visualizzati con due cifre decimali; i
+conteggi restano interi.
+Il rapporto 0/0 non e calcolabile. I conteggi giornalieri sono conservati
+nel log dell'esecuzione; per esecuzioni precedenti senza snapshot sono
+indicati come non disponibili; lo stesso vale per i conteggi notturni non
+registrati nelle esecuzioni precedenti. Un'unica accettazione per stazione accoda
+l'attualizzazione di LVA e LVAn disponibili. I giorni senza nuovi risultati
+conservano i valori attuali precedenti.
 
 Il **Cruscotto correlazioni** seleziona aeroporto e anno dal nome del
 database e mostra, per ogni stazione, le date con almeno un LVA attuale
@@ -110,6 +119,13 @@ giorno. Annullamenti e richieste in corso non sono errori. Il cruscotto
 usa `st_lva`, non `st_lvan`, e non considera i calcoli non attualizzati.
 Le segnalazioni rosse provengono dallo storico dello Script Manager sullo
 stesso server e database, non rilevano errori di script esterni.
+Per una singola stazione e un giorno, il simbolo **×** mostra un'anteprima e
+richiede conferma: rimuove gli abbinamenti evento-battuta per tutti gli shift
+e toglie il flag `attuale` ai risultati correlati LVA/LVAn. Eventi, valori
+totali e storico rimangono. Se LVAn non e presente nel database, l'anteprima
+lo segnala e nessuna tabella viene creata. L'operazione e accodata e si interrompe se i dati
+verificati sono cambiati prima dell'esecuzione. Riattualizzare un risultato
+storico non ricrea gli abbinamenti eliminati.
 
 Se mancano tabelle, la pagina propone la creazione vuota solo dopo conferma:
 usa gli schemi di `bgy_2024_bruma`, e per `st_lvan` quello di
@@ -118,7 +134,7 @@ sul database scelto. Le colonne richieste delle tabelle presenti sono
 verificate rispetto ai riferimenti. La creazione non importa gli eventi e
 richiede che la coda del database sia libera.
 
-Correlazione e attualizzazione condividono la coda per database. Le scritture
+Correlazione, attualizzazione ed eliminazione condividono la coda per database. Le scritture
 sono in AutoCommit: con MyISAM errori, timeout o annullamenti possono lasciare
 cancellazioni o aggiornamenti parziali. Verificare log e dati prima di riprovare;
 gli script esterni non partecipano alla coda applicativa.

@@ -737,7 +737,11 @@ procedure eseguibili dell'applicazione.
 - La formula legacy del valore detto non correlato comprende tutti gli eventi.
   LVA e LVAn sono salvati per data, anche per giorni con solo totale:
   differenza approvata rispetto all'accoppiamento posizionale legacy.
-  L'attualizzazione avviene solo dopo consultazione e conferma separata.
+  Il report mostra differenza LVA, rapporto giornaliero eventi correlati/totali,
+  LVAn e conteggi notturni totali e senza abbinamento (ore 23:00-05:59).
+  I conteggi sono salvati nel log al momento dell'esecuzione; per esecuzioni
+  precedenti senza snapshot non sono disponibili. L'attualizzazione richiede conferma,
+  unica per stazione per LVA e LVAn disponibili.
 - Parametri persistiti nello storico e nel log JSONB; `correla_log` MySQL
   mantenuto usando l'ID inserito, senza `MAX(IdLog)`. Nessuna credenziale
   nel file di parametri applicativo o nei log.
@@ -752,6 +756,9 @@ procedure eseguibili dell'applicazione.
   LVAc/LVAnc. Il rosso segnala l'ultima richiesta terminata con errore o
   timeout nello storico applicativo per stazione e intervallo; non attesta
   quale singolo giorno abbia causato l'errore e non include script esterni.
+  Su conferma, un comando accodato elimina gli abbinamenti di un giorno e
+  stazione per tutti gli shift e disattiva i risultati correlati attuali,
+  conservando valori totali e storico. Verifica che l'anteprima non sia cambiata.
 
 ## Controlli temporali comuni dei comandi migrati 03-08 e 10
 

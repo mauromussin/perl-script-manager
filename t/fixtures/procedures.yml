@@ -188,5 +188,23 @@ procedures:
           type: array
           minItems: 1
           uniqueItems: true
-          items: {type: string, pattern: '^[1-9][0-9]*:[0-9]+:(lva|lvan)$'}
+          items: {type: string, pattern: '^[1-9][0-9]*:[0-9]+(:(lva|lvan))?$'}
         confirm_activation: {type: boolean, enum: [true]}
+  - code: elimina_correlazione_cmp
+    name: 14 test eliminazione
+    ui_hidden: true
+    handler_class: ScriptManager::Command::EliminaCorrelazione
+    execution_mode: async
+    timeout_seconds: 3600
+    queue_by_database: true
+    parameter_schema:
+      type: object
+      required: [database, airport, day, station_id, station_code, snapshot, confirm_deletion]
+      properties:
+        database: {type: string, pattern: '^[A-Za-z0-9_]{1,64}$'}
+        airport: {type: string, enum: [LIMC, LIML, LIME, LIPO]}
+        day: {type: string, format: date}
+        station_id: {type: string, pattern: '^[1-9][0-9]{0,9}$'}
+        station_code: {type: string, pattern: '^[0-9]{1,10}$'}
+        snapshot: {type: string, pattern: '^[0-9a-f]{64}$'}
+        confirm_deletion: {type: boolean, enum: [true]}

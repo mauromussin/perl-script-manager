@@ -1,0 +1,24 @@
+% layout 'default';
+% title 'Elimina correlazione';
+<h1>Elimina correlazione</h1>
+<p>Database <%= $params->{database} %>, aeroporto <%= $params->{airport} %>,
+  stazione <%= $preview->{station_name} // '' %> (<%= $params->{station_code} %>),
+  giorno <%= $params->{day} %>.</p>
+<p>Saranno eliminati <%= $preview->{links} %> abbinamenti evento-battuta per tutti gli shift
+  e tolto il flag attuale a <%= $preview->{active} %> risultati LVA/LVAn correlati.
+  Eventi, valori totali e storico saranno conservati. Riattualizzare un risultato
+  storico non ricrea gli abbinamenti eliminati.</p>
+% unless ($preview->{has_lvan}) {
+<p>La tabella LVAn non e presente in questo database; nessun valore LVAn sara modificato.</p>
+% }
+<p>Operazione in AutoCommit: con MyISAM errori, timeout o annullamenti possono lasciare
+  modifiche parziali, senza rollback. Gli script esterni non partecipano alla coda.</p>
+<form method="post" action="<%= url_for 'correlation_delete' %>">
+  <%= csrf_field %>
+% for my $key (qw(airport database day station_id station_code)) {
+  <input type="hidden" name="<%= $key %>" value="<%= $params->{$key} %>">
+% }
+  <input type="hidden" name="snapshot" value="<%= $preview->{snapshot} %>">
+  <label><input type="checkbox" name="confirm_deletion" value="1" required> Confermo l'eliminazione</label>
+  <button type="submit">Accoda eliminazione</button>
+</form>

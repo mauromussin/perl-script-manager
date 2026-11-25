@@ -103,6 +103,10 @@ sub _routes ($self) {
     $r->get('/')->to('catalog#index')->name('catalog');
     $r->get('/cruscotto')->to('dashboard#index')->name('dashboard');
     $r->get('/cruscotto-correlazioni')->to('dashboard#correlations')->name('correlations_dashboard');
+    $r->get('/cruscotto-correlazioni/elimina')->to('dashboard#correlation_delete_preview')
+        ->name('correlation_delete_preview');
+    $r->post('/cruscotto-correlazioni/elimina')->to('dashboard#correlation_delete')
+        ->name('correlation_delete');
     $r->get('/procedures/<code>')->to('catalog#show')->name('procedure');
     $r->post('/procedures/<code>/run')->to('executions#create')->name('procedure_run');
     $r->post('/procedures/correla_eventi_cmp/prepare')->to('catalog#prepare_correlation')

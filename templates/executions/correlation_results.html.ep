@@ -2,29 +2,39 @@
 % title 'Risultati correlazione';
 <h1>Risultati LVA e LVAn</h1>
 <p>Correlazione <%= $execution->{id} %>, database <%= $execution->{parameters}{database} %>.
-  Il valore totale comprende tutti gli eventi, come nel legacy.</p>
-<p>Seleziona i risultati da rendere correnti. Per ciascun tipo e stazione saranno
-  disattivati i valori precedenti nel periodo. Con MyISAM, errori o annullamenti
-  possono lasciare modifiche parziali.</p>
+  LVAnc e LVAn non correlato comprendono tutti gli eventi, come nel legacy.
+  Ec/E indica eventi correlati su eventi totali. Gli eventi notturni non correlati
+  sono quelli senza abbinamento; il periodo notturno comprende le ore 23:00-05:59.
+  L'asterisco indica un valore attuale.</p>
+<p>Una selezione attualizza LVA e LVAn disponibili per la stazione. I giorni senza nuovi
+  risultati conservano i valori precedenti. Con MyISAM errori o annullamenti possono lasciare modifiche parziali.</p>
 <form method="post" action="<%= url_for 'correlation_activate', id => $execution->{id} %>">
   <%= csrf_field %>
 % for my $result (@$results) {
-  <h2>Stazione <%= $result->{station_code} %> — <%= uc $result->{type} %></h2>
-% if (@{$result->{rows}}) {
-  <label><input type="checkbox" name="activations" value="<%= join ':', @$result{qw(log_id station_code type)} %>">
-    Attualizza questi risultati</label>
+  <h2>Stazione <%= $result->{station_code} %></h2>
+  <label><input type="checkbox" name="activations" value="<%= join ':', @$result{qw(log_id station_code)} %>">
+    Accetta i risultati della stazione</label>
+  <div class="correlation-results-table" role="region" aria-label="Risultati giornalieri" tabindex="0">
   <table>
-    <thead><tr><th>Data</th><th>Tipo</th><th>Valore</th><th>Attuale</th></tr></thead>
+    <thead><tr><th>Data</th><th>LVAnc</th><th>LVAc</th><th>LVAnc-LVAc</th><th>Ec/E</th><th>LVAn non correlato (totale)</th><th>LVAn correlato</th><th>Eventi notturni non correlati</th><th>Eventi notturni totali</th></tr></thead>
     <tbody>
 % for my $row (@{$result->{rows}}) {
-      <tr><td><%= $row->{giorno} %></td><td><%= $row->{correlato} ? 'Correlato' : 'Totale' %></td>
-        <td><%= $row->{valore} %></td><td><%= $row->{attuale} ? 'Si' : 'No' %></td></tr>
+%   my $lva = $row->{lva} // {};
+%   my $lvan = $row->{lvan} // {};
+%   my $counts = $row->{counts};
+      <tr data-day="<%= $row->{giorno} %>"><td><%= $row->{giorno} %></td>
+        <td><%= exists $lva->{0} ? sprintf('%.2f', $lva->{0}{valore}) . ($lva->{0}{attuale} ? ' *' : '') : '—' %></td>
+        <td><%= exists $lva->{1} ? sprintf('%.2f', $lva->{1}{valore}) . ($lva->{1}{attuale} ? ' *' : '') : '—' %></td>
+        <td><%= exists $lva->{0} && exists $lva->{1} ? sprintf('%.2f', $lva->{0}{valore} - $lva->{1}{valore}) : '—' %></td>
+        <td><%= $counts ? "$counts->{correlati}/$counts->{eventi}" . ($counts->{eventi} ? sprintf(' (%.2f%%)', 100 * $counts->{correlati} / $counts->{eventi}) : ' (non calcolabile)') : 'Non disponibile' %></td>
+        <td><%= exists $lvan->{0} ? sprintf('%.2f', $lvan->{0}{valore}) . ($lvan->{0}{attuale} ? ' *' : '') : '—' %></td>
+        <td><%= exists $lvan->{1} ? sprintf('%.2f', $lvan->{1}{valore}) . ($lvan->{1}{attuale} ? ' *' : '') : '—' %></td>
+        <td><%= $counts && defined $counts->{non_correlati_notturni} ? $counts->{non_correlati_notturni} : 'Non disponibile' %></td>
+        <td><%= $counts && defined $counts->{eventi_notturni} ? $counts->{eventi_notturni} : 'Non disponibile' %></td></tr>
 % }
     </tbody>
   </table>
-% } else {
-  <p>Nessun risultato per il periodo.</p>
-% }
+  </div>
 % }
   <label><input type="checkbox" name="confirm_activation" value="1" required> Confermo l'attualizzazione selezionata</label>
   <button type="submit">Accoda attualizzazione</button>

@@ -34,7 +34,8 @@
   tra le stazioni dell'aeroporto; bianco indica dato assente o LVAnc mancante.</p>
 <p>Il rosso segnala un'ultima correlazione terminata con errore o timeout il cui intervallo
   comprende il giorno; non individua necessariamente il giorno in cui si e verificato l'errore.
-  Selezionare la cella rossa per consultare i log.</p>
+  Selezionare la cella rossa per consultare i log. Il simbolo × sotto una cella
+  apre la verifica per eliminare la correlazione della stazione e del giorno.</p>
 <ul class="heat-legend" aria-label="Legenda">
   <li><span class="heat-key heat-success"></span> LVAc e LVAnc presenti</li>
   <li><span class="heat-key heat-empty"></span> Dato assente o LVAnc mancante</li>
@@ -65,6 +66,9 @@
         <a class="correlation-cell heat-<%= $cell->{tone} %>" href="<%= url_for 'execution', id => $cell->{execution_id} %>" title="<%= "$day: $cell->{label}" %>" aria-label="<%= "$day: $cell->{label}" %>"></a>
 %       } else {
         <span role="img" tabindex="0" class="correlation-cell heat-<%= $cell->{tone} %>" title="<%= "$day: $cell->{label}" %>" aria-label="<%= "$day: $cell->{label}" %>"></span>
+%       }
+%       if ($cell->{can_delete}) {
+        <a class="correlation-delete" href="<%= url_for('correlation_delete_preview')->query(airport => $airport, database => $database, day => $day, station_id => $station->{row_id}, station_code => $station->{c_cab}) %>" title="<%= "Elimina correlazione $station->{nome} $day" %>" aria-label="<%= "Elimina correlazione $station->{nome} $day" %>">×</a>
 %       }
       </td>
 %     }

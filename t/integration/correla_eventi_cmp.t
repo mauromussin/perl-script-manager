@@ -84,6 +84,13 @@ ok abs($night - (10 * log(10 ** 8 / 25200) / log(10))) < 0.000001, 'formula LVAn
 my $lva = $db->selectrow_array("SELECT valore FROM st_lva WHERE id_stazione=227 AND data_lva='2025-01-03' AND correlato=0");
 ok abs($lva - (10 * log((10 ** 9 + 10 ** 8) / 86400) / log(10))) < 0.000001, 'formula LVA giorno e notte';
 my @complete = grep { $_->[0] eq 'info' && grep { defined $_ && $_ eq 'correlation_station_complete' } @$_ } @{$ctx->logs};
+my @daily = grep { $_->[0] eq 'info' && grep { defined $_ && $_ eq 'correlation_daily_counts' } @$_ } @{$ctx->logs};
+my %daily_metadata = @{$daily[0]}[2 .. $#{$daily[0]}];
+is_deeply $daily_metadata{days}, [
+    {giorno => '2025-01-01', eventi => 2, correlati => 2, eventi_notturni => 0, non_correlati_notturni => 0},
+    {giorno => '2025-01-02', eventi => 1, correlati => 0, eventi_notturni => 1, non_correlati_notturni => 1},
+    {giorno => '2025-01-03', eventi => 2, correlati => 0, eventi_notturni => 1, non_correlati_notturni => 1},
+], 'conteggi giornalieri di eventi distinti salvati al momento della correlazione';
 is scalar(@complete), 2, 'log strutturato per stazione';
 for my $entry (@complete) {
     my %metadata = @$entry[2 .. $#$entry];
@@ -100,7 +107,13 @@ is $db->selectrow_array('SELECT COUNT(*) FROM st_lva WHERE attuale<>0'), 0, 'nes
 
 $db->do("INSERT INTO flay VALUES (15,'A',3)");
 $db->do("INSERT INTO battute VALUES (105,15,0,0,1,'Y','2025-01-02 23:00:00')");
-my $mixed = $command->run(CorrelaTestContext->new, {%$params, stations => ['1:227:0:0:20:14']});
+$db->do("INSERT INTO st_eventi_cmp VALUES (9,227,'2025-01-02 00:00:00',70)");
+my $mixed_ctx = CorrelaTestContext->new;
+my $mixed = $command->run($mixed_ctx, {%$params, stations => ['1:227:0:0:20:14']});
+my ($mixed_daily) = grep { grep { defined $_ && $_ eq 'correlation_daily_counts' } @$_ } @{$mixed_ctx->logs};
+my %mixed_metadata = @$mixed_daily[2 .. $#$mixed_daily];
+is_deeply [@{$mixed_metadata{days}[1]}{qw(eventi_notturni non_correlati_notturni)}], [2, 1],
+    'evento notturno correlato incluso nel totale ma non nei non correlati';
 my $mixed_id = $mixed->{data}{stations}[0]{log_id};
 is_deeply $db->selectall_arrayref('SELECT data_lva,correlato FROM st_lva WHERE id_log=? ORDER BY data_lva,correlato',
     undef, $mixed_id), [['2025-01-01',0],['2025-01-01',1],['2025-01-02',0],['2025-01-02',1],['2025-01-03',0]],
@@ -112,6 +125,7 @@ my $night_corr = $db->selectrow_array('SELECT valore FROM st_lvan WHERE id_log=?
 ok abs($night_corr - (10 * log(10 ** 8 / 25200) / log(10))) < 0.000001, 'formula LVAn correlata';
 $db->do('DELETE FROM battute WHERE row_id=105');
 $db->do('DELETE FROM flay WHERE row_id=15');
+$db->do('DELETE FROM st_eventi_cmp WHERE row_id=9');
 $db->do('DELETE FROM battute_eventi_cmp');
 $params->{stations} = ['1:227:1:-1:20:13'];
 $result = $command->run(CorrelaTestContext->new, $params);
@@ -186,6 +200,17 @@ like "$@", qr/annullato/, 'annullamento dopo cancellazione propagato';
 ok grep({ $_->[0] eq 'warning' && $_->[1] =~ /parziali/ } @{$cancel_ctx->logs}), 'avviso esplicito effetti parziali';
 ok !grep({ grep { defined $_ && $_ eq 'correlation_station_complete' } @$_ } @{$cancel_ctx->logs}),
     'annullamento non pubblica completamento';
+$db->do("INSERT INTO st_eventi_cmp VALUES "
+    . "(20,228,'2025-01-02 00:00:00',70),(21,228,'2025-01-02 05:59:59',70),"
+    . "(22,228,'2025-01-02 06:00:00',70),(23,228,'2025-01-02 22:59:59',70),"
+    . "(24,228,'2025-01-02 23:00:00',70)");
+my $boundary_ctx = CorrelaTestContext->new;
+$command->run($boundary_ctx, {%$params, date_from => '2025-01-02', date_to => '2025-01-02',
+    stations => ['2:228:0:0:1:14']});
+my ($boundary_daily) = grep { grep { defined $_ && $_ eq 'correlation_daily_counts' } @$_ } @{$boundary_ctx->logs};
+my %boundary_metadata = @$boundary_daily[2 .. $#$boundary_daily];
+is_deeply [@{$boundary_metadata{days}[0]}{qw(eventi eventi_notturni non_correlati_notturni)}], [5, 3, 3],
+    'intervallo notturno comprende 00:00, 05:59 e 23:00 ma esclude 06:00 e 22:59';
 $before = $db->selectrow_array('SELECT COUNT(*) FROM battute_eventi_cmp');
 $db->do('DROP TABLE st_lvan');
 eval { $command->run(CorrelaTestContext->new, $params) };

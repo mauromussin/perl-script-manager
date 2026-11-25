@@ -1,4 +1,5 @@
 use Mojo::Base -strict, -signatures;
+use utf8;
 use Test::More;
 use DBI;
 use FindBin;
@@ -138,7 +139,35 @@ $db->do(q{INSERT INTO bgy_2026_bruma.st_lva
     VALUES ('2024-05-20',204,'2024-05-20',0,50,12,1,'0'),
            ('2024-05-21',204,'2024-05-21',0,50,14,1,'0')});
 $t->get_ok("/executions/$id/correlation-results")->status_is(200)
-    ->content_like(qr/2024-05-20/)->element_exists('input[name=activations]');
+    ->content_like(qr/2024-05-20/)->content_like(qr/1\/1 \(100\.00%\)/)
+    ->content_like(qr/0\/0 \(non calcolabile\)/)
+    ->element_exists("input[name=activations][value=\"$log_id:204\"]")
+    ->element_count_is('input[name=activations]', 1);
+is $t->tx->res->dom->at('tr[data-day="2024-05-20"]')->find('td')->[3]->all_text,
+    '0.00', 'differenza tra LVAnc e LVAc mostrata per il giorno';
+is_deeply [map { $_->all_text } $t->tx->res->dom->at('tr[data-day="2024-05-20"]')->find('td')->each],
+    ['2024-05-20', '30.63', '30.63', '0.00', '1/1 (100.00%)', '35.99', '35.99', '0', '1'],
+    'LVA, LVAn, differenza e percentuale a due decimali, conteggi notturni interi nella stessa riga';
+is_deeply [map { $_->all_text } $t->tx->res->dom->at('tr[data-day="2024-05-21"]')->find('td')->each],
+    ['2024-05-21', '—', '—', '—', '0/0 (non calcolabile)', '—', '—', '0', '0'],
+    'giorno senza eventi: conteggi notturni zero e valori mancanti';
+my $old = $app->repo->create_execution(procedure_code => 'correla_eventi_cmp',
+    requested_by => 'test', queue_target => $execution->{queue_target}, parameters => $execution->{parameters});
+$app->pg->db->query("update executions set status='completed' where id=?", $old);
+$app->repo->add_event($old, info => 'completata', metadata => $event->{metadata});
+$t->get_ok("/executions/$old/correlation-results")->status_is(200)->content_like(qr/Non disponibile/);
+my $old_daily = $app->repo->create_execution(procedure_code => 'correla_eventi_cmp',
+    requested_by => 'test', queue_target => $execution->{queue_target}, parameters => $execution->{parameters});
+$app->pg->db->query("update executions set status='completed' where id=?", $old_daily);
+$app->repo->add_event($old_daily, info => 'completata', metadata => $event->{metadata});
+$app->repo->add_event($old_daily, info => 'conteggi precedenti', metadata => {
+    operation => 'correlation_daily_counts', station_code => 204, log_id => $log_id,
+    days => [{giorno => '2024-05-20', eventi => 1, correlati => 1}],
+});
+$t->get_ok("/executions/$old_daily/correlation-results")->status_is(200);
+my @old_cells = map { $_->all_text } $t->tx->res->dom->at('tr[data-day="2024-05-20"]')->find('td')->each;
+is_deeply [@old_cells[7,8]],
+    ['Non disponibile', 'Non disponibile'], 'vecchi conteggi senza snapshot notturno non ricostruiti dai dati correnti';
 {
     local $ENV{MYSQL_HOST} = 'another-server';
     my $review = ScriptManager::Service::CorrelazioneReview->new(repo => $app->repo);
@@ -161,7 +190,7 @@ is $app->repo->get_execution($forged)->{error_code}, 'invalid_activation';
 is $db->selectrow_array('SELECT attuale FROM bgy_2026_bruma.st_lva WHERE id_log = ?', undef, 12), 1,
     'nessuna modifica per risultati non autorizzati';
 $t->post_ok("/executions/$id/correlation-activate" => form =>
-    {csrf_token => $token, activations => "$log_id:204:lva", confirm_activation => 1})->status_is(302);
+    {csrf_token => $token, activations => "$log_id:204", confirm_activation => 1})->status_is(302);
 my ($activation) = $t->tx->res->headers->location =~ m{/executions/([0-9a-f-]+)};
 is $app->execution_service->execute($activation), 'completed', 'attualizzazione accodata ed eseguita';
 is $db->selectrow_array('SELECT attuale FROM bgy_2026_bruma.st_lva WHERE id_log = ?', undef, 12), 0;
@@ -169,6 +198,35 @@ is $db->selectrow_array('SELECT attuale FROM bgy_2026_bruma.st_lva WHERE id_log 
     'risultati attuali conservati nei giorni senza nuovi valori';
 is $db->selectrow_array('SELECT COUNT(*) FROM bgy_2026_bruma.st_lva WHERE id_log = ? AND attuale = 1',
     undef, $log_id), 2, 'correlato e totale attualizzati';
+is $db->selectrow_array('SELECT COUNT(*) FROM bgy_2026_bruma.st_lvan WHERE id_log = ? AND attuale = 1',
+    undef, $log_id), 2, 'la stessa accettazione attualizza LVAn';
+my $legacy = $app->execution_service->submit(attualizza_correlazione_cmp => {
+    database => 'bgy_2026_bruma', airport => 'LIME', source_execution_id => $id,
+    activations => ["$log_id:204:lva"], confirm_activation => true,
+})->{id};
+is $app->execution_service->execute($legacy), 'completed', 'compatibilita con richieste precedenti gia in coda';
+my $duplicate = $app->execution_service->submit(attualizza_correlazione_cmp => {
+    database => 'bgy_2026_bruma', airport => 'LIME', source_execution_id => $id,
+    activations => ["$log_id:204", "$log_id:204:lva"], confirm_activation => true,
+})->{id};
+is $app->execution_service->execute($duplicate), 'failed', 'rifiutata selezione sovrapposta della stessa stazione';
+is $app->repo->get_execution($duplicate)->{error_code}, 'invalid_activation';
+$db->do(q{INSERT INTO bgy_2026_bruma.st_lva
+    (data_calc,id_stazione,data_lva,correlato,valore,id_log,attuale)
+    VALUES ('2024-05-21',204,'2024-05-21',0,55,123,0)});
+my $lva_only = $app->repo->create_execution(procedure_code => 'correla_eventi_cmp',
+    requested_by => 'test', queue_target => $execution->{queue_target}, parameters => $execution->{parameters});
+$app->pg->db->query("update executions set status='completed' where id=?", $lva_only);
+$app->repo->add_event($lva_only, info => 'completata',
+    metadata => {operation => 'correlation_station_complete', station_code => 204, log_id => 123});
+my $single = $app->execution_service->submit(attualizza_correlazione_cmp => {
+    database => 'bgy_2026_bruma', airport => 'LIME', source_execution_id => $lva_only,
+    activations => ['123:204'], confirm_activation => true,
+})->{id};
+is $app->execution_service->execute($single), 'completed', 'accettazione consentita quando LVAn non e disponibile';
+is $db->selectrow_array('SELECT attuale FROM bgy_2026_bruma.st_lva WHERE id_log=123'), 1;
+is $db->selectrow_array('SELECT COUNT(*) FROM bgy_2026_bruma.st_lvan WHERE id_log=? AND attuale=1', undef, $log_id),
+    2, 'LVAn precedente conservato se non ci sono nuovi risultati';
 
 subtest 'cruscotto correlazioni per aeroporto, anno e giorni con LVA attuale' => sub {
     $db->do("INSERT INTO anagrafica.stazioni VALUES (3,1,206,'Seconda',0,0,0)");
@@ -210,6 +268,7 @@ subtest 'cruscotto correlazioni per aeroporto, anno e giorni con LVA attuale' =>
         ->element_exists('select[name=year] option[value=2026]');
     $t->get_ok('/cruscotto-correlazioni?airport=LIME&year=2026')->status_is(200)
         ->element_exists('tr[data-station="1"] td[data-day="2026-01-01"] .heat-success')
+        ->element_exists('tr[data-station="1"] td[data-day="2026-01-01"] a[href^="/cruscotto-correlazioni/elimina"]')
         ->element_exists("tr[data-station=\"1\"] td[data-day=\"2026-01-02\"] a.heat-failure[href=\"/executions/$failed_id\"]")
         ->element_exists('tr[data-station="1"] td[data-day="2026-01-03"] .heat-empty')
         ->element_exists('tr[data-station="1"] td[data-day="2026-01-04"] .heat-empty')
@@ -222,6 +281,86 @@ subtest 'cruscotto correlazioni per aeroporto, anno e giorni con LVA attuale' =>
     $t->get_ok('/cruscotto-correlazioni?airport=LIME&year=2027')->status_is(422);
     $t->get_ok('/cruscotto-correlazioni?airport=LIME&year=2026%27')->status_is(422);
     $t->get_ok('/cruscotto-correlazioni?airport=INVALID&year=2026')->status_is(422);
+
+    $db->do(q{INSERT INTO bgy_2026_bruma.st_eventi_cmp
+        (id_centralina_cmp,Data_ora,Durata,Leq,Sel) VALUES
+        (204,'2026-01-01 10:00:00',20,60,70),(204,'2026-01-02 10:00:00',20,60,70),
+        (206,'2026-01-01 10:00:00',20,60,70)});
+    $db->do(q{INSERT INTO bgy_2026_bruma.battute_eventi_cmp (flay_id,battuta_id,evento_cmp_id,distance,shift)
+        SELECT 10,100,row_id,10,1 FROM bgy_2026_bruma.st_eventi_cmp WHERE Data_ora >= '2026-01-01'});
+    $db->do(q{INSERT INTO bgy_2026_bruma.battute_eventi_cmp (flay_id,battuta_id,evento_cmp_id,distance,shift)
+        SELECT 10,100,row_id,10,9 FROM bgy_2026_bruma.st_eventi_cmp
+        WHERE id_centralina_cmp=204 AND DATE(Data_ora)='2026-01-01'});
+    $db->do(q{INSERT INTO bgy_2026_bruma.st_lvan
+        (data_calc,id_stazione,data_lvan,correlato,valore,id_log,attuale)
+        VALUES ('2026-01-01',204,'2026-01-01',0,50,21,1),
+               ('2026-01-01',204,'2026-01-01',1,40,21,1),
+               ('2026-01-01',204,'2026-01-01',1,35,20,0)});
+    my $preview = '/cruscotto-correlazioni/elimina?airport=LIME&database=bgy_2026_bruma'
+        . '&day=2026-01-01&station_id=1&station_code=204';
+    $t->get_ok($preview)->status_is(200)->content_like(qr/2 abbinamenti/);
+    my $csrf = $t->tx->res->dom->at('input[name=csrf_token]')->attr('value');
+    my $snapshot = $t->tx->res->dom->at('input[name=snapshot]')->attr('value');
+    my %delete = (airport => 'LIME', database => 'bgy_2026_bruma', day => '2026-01-01',
+        station_id => 1, station_code => 204, snapshot => $snapshot, confirm_deletion => 1);
+    $t->post_ok('/cruscotto-correlazioni/elimina' => form => \%delete)->status_is(403);
+    $delete{csrf_token} = $csrf;
+    delete $delete{confirm_deletion};
+    $t->post_ok('/cruscotto-correlazioni/elimina' => form => \%delete)->status_is(422);
+    $delete{confirm_deletion} = 1;
+    $t->post_ok('/cruscotto-correlazioni/elimina' => form => \%delete)->status_is(302);
+    my ($stale) = $t->tx->res->headers->location =~ m{/executions/([0-9a-f-]+)};
+    $db->do("UPDATE bgy_2026_bruma.st_lvan SET valore=41 WHERE id_log=21 AND correlato=1");
+    is $app->execution_service->execute($stale), 'failed', 'cancellazione rifiutata se i dati cambiano in coda';
+    is $app->repo->get_execution($stale)->{error_code}, 'correlation_changed';
+    is $db->selectrow_array('SELECT COUNT(*) FROM bgy_2026_bruma.battute_eventi_cmp'), 5,
+        'nessuna cancellazione con anteprima scaduta';
+    $t->get_ok($preview)->status_is(200);
+    $delete{snapshot} = $t->tx->res->dom->at('input[name=snapshot]')->attr('value');
+    $t->post_ok('/cruscotto-correlazioni/elimina' => form => \%delete)->status_is(302);
+    my ($deletion) = $t->tx->res->headers->location =~ m{/executions/([0-9a-f-]+)};
+    is $app->execution_service->execute($deletion), 'completed', 'cancellazione accodata completata';
+    is $db->selectrow_array('SELECT COUNT(*) FROM bgy_2026_bruma.battute_eventi_cmp'), 3,
+        'rimossi tutti gli shift della sola coppia selezionata';
+    is $db->selectrow_array("SELECT COUNT(*) FROM bgy_2026_bruma.st_lva WHERE id_log=21 AND correlato=1 AND attuale=1"),
+        0, 'flag attuale LVA correlato rimosso';
+    is $db->selectrow_array("SELECT COUNT(*) FROM bgy_2026_bruma.st_lvan WHERE id_log=21 AND correlato=1 AND attuale=1"),
+        0, 'flag attuale LVAn correlato rimosso';
+    is $db->selectrow_array("SELECT COUNT(*) FROM bgy_2026_bruma.st_lvan WHERE id_log=21 AND correlato=0 AND attuale=1"),
+        1, 'totale attuale preservato';
+    is $db->selectrow_array("SELECT COUNT(*) FROM bgy_2026_bruma.st_lvan WHERE id_stazione=204 AND correlato=1 AND data_lvan='2026-01-01'"),
+        2, 'storico correlato conservato';
+    $t->get_ok($preview . '&station_code=206')->status_is(422);
+    $t->get_ok('/cruscotto-correlazioni/elimina?airport=LIME&database=bgy_2026_bruma&day=2025-01-01&station_id=1&station_code=204')
+        ->status_is(422);
 };
+
+$db->do(q{DELETE FROM bgy_2026_bruma.battute_eventi_cmp WHERE evento_cmp_id IN
+    (SELECT row_id FROM bgy_2026_bruma.st_eventi_cmp WHERE DATE(Data_ora)='2024-05-20')});
+$t->get_ok("/executions/$id/correlation-results")->status_is(200)->content_like(qr/1\/1 \(100\.00%\)/,
+    'il report mantiene i conteggi della correlazione originaria dopo modifiche successive');
+my @after_cells = map { $_->all_text } $t->tx->res->dom->at('tr[data-day="2024-05-20"]')->find('td')->each;
+is_deeply [@after_cells[7,8]],
+    ['0', '1'], 'conteggi notturni originali conservati dopo rimozione dell abbinamento';
+
+$db->do(q{INSERT INTO bgy_2024_bruma.st_eventi_cmp
+    (id_centralina_cmp,Data_ora,Durata,Leq,Sel) VALUES (204,'2024-01-01 10:00:00',20,60,70)});
+$db->do(q{INSERT INTO bgy_2024_bruma.battute_eventi_cmp (flay_id,battuta_id,evento_cmp_id,distance,shift)
+    SELECT 10,100,row_id,10,1 FROM bgy_2024_bruma.st_eventi_cmp});
+$db->do(q{INSERT INTO bgy_2024_bruma.st_lva (data_calc,id_stazione,data_lva,correlato,valore,id_log,attuale)
+    VALUES ('2024-01-01',204,'2024-01-01',0,50,21,1),('2024-01-01',204,'2024-01-01',1,40,21,1)});
+my $without_lvan = '/cruscotto-correlazioni/elimina?airport=LIME&database=bgy_2024_bruma'
+    . '&day=2024-01-01&station_id=1&station_code=204';
+$t->get_ok($without_lvan)->status_is(200)->content_like(qr/tabella LVAn non e presente/);
+my $delete_token = $t->tx->res->dom->at('input[name=csrf_token]')->attr('value');
+my $delete_snapshot = $t->tx->res->dom->at('input[name=snapshot]')->attr('value');
+$t->post_ok('/cruscotto-correlazioni/elimina' => form => {
+    csrf_token => $delete_token, airport => 'LIME', database => 'bgy_2024_bruma', day => '2024-01-01',
+    station_id => 1, station_code => 204, snapshot => $delete_snapshot, confirm_deletion => 1,
+})->status_is(302);
+my ($delete_no_lvan) = $t->tx->res->headers->location =~ m{/executions/([0-9a-f-]+)};
+is $app->execution_service->execute($delete_no_lvan), 'completed', 'cancellazione possibile senza tabella LVAn';
+is $db->selectrow_array('SELECT COUNT(*) FROM bgy_2024_bruma.battute_eventi_cmp'), 0;
+is $db->selectrow_array('SELECT attuale FROM bgy_2024_bruma.st_lva WHERE correlato=1'), 0;
 
 done_testing;

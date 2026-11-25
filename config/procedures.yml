@@ -308,8 +308,31 @@ procedures:
           type: array
           minItems: 1
           uniqueItems: true
-          items: {type: string, pattern: '^[1-9][0-9]*:[0-9]+:(lva|lvan)$'}
+          items: {type: string, pattern: '^[1-9][0-9]*:[0-9]+(:(lva|lvan))?$'}
         confirm_activation: {type: boolean, enum: [true]}
+  - code: elimina_correlazione_cmp
+    name: 14-elimina correlazione stazione e giorno
+    ui_hidden: true
+    description: >-
+      Elimina gli abbinamenti della stazione e del giorno per tutti gli shift e
+      disattiva i risultati correlati attuali. MyISAM non garantisce rollback.
+    enabled: true
+    handler_class: ScriptManager::Command::EliminaCorrelazione
+    queue_by_database: true
+    execution_mode: async
+    timeout_seconds: 3600
+    exclusive: true
+    parameter_schema:
+      type: object
+      required: [database, airport, day, station_id, station_code, snapshot, confirm_deletion]
+      properties:
+        database: *runway_database
+        airport: *runway_airport
+        day: {type: string, format: date}
+        station_id: {type: string, pattern: '^[1-9][0-9]{0,9}$'}
+        station_code: {type: string, pattern: '^[0-9]{1,10}$'}
+        snapshot: {type: string, pattern: '^[0-9a-f]{64}$'}
+        confirm_deletion: {type: boolean, enum: [true]}
   - code: example_echo
     name: Esempio - eco con file di output
     description: >-
