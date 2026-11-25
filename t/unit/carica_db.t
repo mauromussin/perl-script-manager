@@ -156,6 +156,28 @@ subtest 'importazione e opzione mezzanotte' => sub {
     }
 };
 
+subtest 'data delle battute oltre la mezzanotte UTC' => sub {
+    my $file = $input->child('LIML_20260202.OUT');
+    my $late_header = '20261231235900ABC1234 B738LIMLLIME';
+    my $sample = sub ($time) { sprintf '%06d%06d%06d%s', 64, -64, 100, $time };
+    $file->spew($late_header . $sample->('235959') . $sample->('235958')
+        . $sample->('000001') . $sample->('000002') . "\n");
+    my $db = LoaderDatabase->new;
+    my $loader = ScriptManager::Command::CaricaDB->new(connect_db => sub (@args) { $db });
+    ok $loader->run(LoaderContext->new, $params)->{success}, 'attraversamento caricato anche senza merge';
+    my @lines = split /\n/, $db->csv;
+    my @dates = map { (split /,/, $_)[12] } @lines;
+    is_deeply \@dates, ['2027-1-1 0:59:59', '2027-1-1 0:59:58', '2027-1-1 1:0:1', '2027-1-1 1:0:2'],
+        'piccolo riordino conservato e data UTC avanzata al cambio anno';
+
+    $file->spew($late_header . $sample->('000001') . $sample->('235959') . "\n");
+    $db = LoaderDatabase->new;
+    eval { $loader->run(LoaderContext->new, $params) };
+    like "$@", qr/Orari OUT ambigui dopo la mezzanotte/, 'sequenza ambigua non datata arbitrariamente';
+    ok $db->rolled_back && !$db->committed, 'sequenza ambigua annullata';
+    $file->spew("$header$hit\n");
+};
+
 subtest 'tracce senza battute ignorate con warning senza interrompere i record validi' => sub {
     $input->child('LIML_20260202.OUT')->spew("$header\n$header$hit\n$header\r\n");
     my $db = LoaderDatabase->new;

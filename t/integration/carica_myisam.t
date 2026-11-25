@@ -76,8 +76,9 @@ plan skip_all => 'TEST_MYSQL=1 necessario per creare un database MySQL isolato'
     use Mojo::Base 'ScriptManager::Command::CaricaDB', -signatures;
     has fail_after_merge => 0;
     sub merge_midnight ($self, @args) {
-        $self->SUPER::merge_midnight(@args);
+        my $result = $self->SUPER::merge_midnight(@args);
         die "Errore dopo unione simulato\n" if $self->fail_after_merge;
+        return $result;
     }
 }
 
@@ -527,6 +528,125 @@ subtest 'merge riuscito conserva il comportamento per tracce vecchie e nuove' =>
     is rows('battute')->[1][2], 3, 'battuta nuova unita alla traccia precedente';
     is rows('battute_doppie')->[0][2], 4, 'come nel legacy le doppie restano sulla traccia individuata';
     is_deeply work_tables(), [];
+};
+
+subtest 'sovrapposizione a mezzanotte verificata, conflitti e rollback' => sub {
+    my $first_file = $input->child('LIML.OUT');
+    my $second_file = $input->child('LIML_2.OUT');
+    my $first_header = substr(record('ABC1234', '20261231', '235900'), 0, 34);
+    my $second_header = substr(record('ABC1234', '20270101', '000001'), 0, 34);
+    my $sample = sub ($time) { sprintf '%06d%06d%06d%s', 64, -64, 100, $time };
+    my $overlap = $sample->('000001');
+    my $first = $first_header . $sample->('235959') . $overlap . "\n";
+    my $second = $second_header . $overlap . $sample->('000002') . "\n";
+    my $different = $overlap;
+    substr($different, 0, 6, '    64');
+
+    for my $engine (qw(MyISAM InnoDB)) {
+        for my $case (qw(identical different rollback)) {
+            reset_tables();
+            $admin->do("ALTER TABLE $_ ENGINE=$engine") for qw(flay battute battute_doppie);
+            $first_file->spew($first);
+            $second_file->spew($case eq 'different'
+                ? $second_header . $different . $sample->('000002') . "\n" : $second);
+            my $db = connection();
+            my $load = MyISAMTestLoader->new(
+                connect_db => sub (@) { $engine eq 'MyISAM' ? $db : $db->db },
+                fail_after_merge => $case eq 'rollback');
+            my $ctx = context();
+            my $result = eval { $load->run($ctx, {%$params, merge_midnight => 1}) };
+            if ($case eq 'rollback') {
+                ok $@, "$engine: errore dopo deduplica";
+                is_deeply rows('flay'), [], 'tracce annullate';
+                is_deeply rows('battute'), [], 'battute annullate';
+            } elsif ($case eq 'different') {
+                ok $result->{success}, "$engine: conflitto segnalato senza interrompere il caricamento";
+                is $result->{data}{midnight_merge_conflicts}, 1;
+                is scalar @{rows('battute')}, 4, 'nessuna battuta eliminata';
+                is $admin->selectrow_array('SELECT validation_fl FROM flay WHERE data = ?', undef, '2027-01-01'),
+                    undef, 'traccia non marcata come unita';
+                ok scalar(grep { ($_->{operation} // '') eq 'merge_midnight_conflict' } @{$ctx->events}),
+                    'avviso esplicito';
+            } else {
+                ok $result->{success}, "$engine: tracce unite";
+                is $result->{data}{merged_duplicate_hits}, 1;
+                is scalar @{rows('battute')}, 3, 'una sola battuta sovrapposta conservata';
+                my $hits = $admin->selectall_arrayref(
+                    'SELECT flay_id, ora, time_italy FROM battute ORDER BY ora');
+                is_deeply [map { $_->[0] } @$hits], [1, 1, 1], 'battute associate alla prima traccia';
+                is $hits->[0][2], '2027-01-01 01:00:01', 'battuta oltre mezzanotte datata correttamente';
+                is $admin->selectrow_array('SELECT validation_fl FROM flay WHERE data = ?', undef, '2027-01-01'),
+                    'M', 'seconda traccia marcata come unita';
+                ok scalar(grep { ($_->{operation} // '') eq 'merge_midnight_duplicates' } @{$ctx->events}),
+                    'deduplica tracciata';
+            }
+            is_deeply work_tables(), [], 'nessun journal o staging residuo';
+            $db->disconnect if $engine eq 'InnoDB';
+        }
+    }
+    $second_file->remove;
+};
+
+subtest 'sovrapposizioni preesistenti non vengono eliminate senza origine verificabile' => sub {
+    for my $engine (qw(MyISAM InnoDB)) {
+        reset_tables();
+        $admin->do("ALTER TABLE $_ ENGINE=$engine") for qw(flay battute battute_doppie);
+        $admin->do(q{INSERT INTO flay (row_id,flay,data,ora,airport_dep,flay_operation)
+            VALUES (1,'OLD0001','2026-02-01','23:05:00','LIML','D'),
+                   (2,'OLD0001','2026-02-02','00:05:00','LIML','D')});
+        $admin->do(q{INSERT INTO battute (flay_id,ora,X_m,Y_m,H_m,time_italy)
+            VALUES (1,'00:05:00',1,2,3,'2026-02-02 01:05:00'),
+                   (2,'00:05:00',1,2,3,'2026-02-02 01:05:00')});
+        my $before = rows('battute');
+        $input->child('LIML.OUT')->spew(record());
+        my $db = connection();
+        my $load = MyISAMTestLoader->new(connect_db => sub (@) { $engine eq 'MyISAM' ? $db : $db->db });
+        my $result = $load->run(context(), {%$params, merge_midnight => 1});
+        is $result->{data}{midnight_merge_conflicts}, 1, "$engine: conflitto preesistente segnalato";
+        is_deeply [@{rows('battute')}[0, 1]], $before, 'battute preesistenti inalterate';
+        is $admin->selectrow_array('SELECT validation_fl FROM flay WHERE row_id = ?', undef, 2), undef;
+        is_deeply work_tables(), [];
+        $db->disconnect if $engine eq 'InnoDB';
+    }
+};
+
+subtest 'differenze nei campi aggiuntivi impediscono la deduplica' => sub {
+    reset_tables();
+    $admin->do(q{INSERT INTO flay (row_id,flay,data,ora,airport_dep,flay_operation)
+        VALUES (1,'OLD0001','2026-02-01','23:05:00','LIML','D'),
+               (2,'OLD0001','2026-02-02','00:05:00','LIML','D')});
+    $admin->do(q{INSERT INTO battute (flay_id,ora,X_m,Y_m,H_m,time_italy,validation)
+        VALUES (1,'00:05:00',1,2,3,'2026-02-02 01:05:00','Y'),
+               (2,'00:05:00',1,2,3,'2026-02-02 01:05:00',NULL)});
+    my $before = rows('battute');
+    my $db = connection();
+    my $result = ScriptManager::Command::CaricaDB->new->merge_midnight(
+        context(), $db, {LIML => 'Linate'}, sub ($id, $key) { 'sample' });
+    is $result->{skipped}, 1, 'stesso campione ma metadati differenti: unione rifiutata';
+    is_deeply rows('battute'), $before, 'nessuna informazione aggiuntiva eliminata';
+    $db->disconnect;
+};
+
+subtest 'journal pubblicato registra il conteggio dopo deduplica' => sub {
+    reset_tables();
+    my $first = substr(record('ABC1234', '20261231', '235900'), 0, 34);
+    my $second = substr(record('ABC1234', '20270101', '000001'), 0, 34);
+    my $sample = sprintf '%06d%06d%06d%s', 64, -64, 100, '000001';
+    $input->child('LIML.OUT')->spew($first . $sample . "\n");
+    $input->child('LIML_2.OUT')->spew($second . $sample . "\n");
+    my $ctx = context();
+    my $result = loader(drop_failure => 1)->run($ctx, {%$params, merge_midnight => 1});
+    is $result->{data}{merged_duplicate_hits}, 1;
+    my $journal = ScriptManager::Service::MyISAMImport->new(ctx => $ctx)->names->{state};
+    is $admin->selectrow_array('SELECT battute_count FROM ' . $admin->quote_identifier($journal)), 1,
+        'journal aggiornato prima della pubblicazione';
+    my $db = connection();
+    my $session = ScriptManager::Service::MyISAMImport->new(db => $db, ctx => context())->prepare;
+    $session->abort;
+    $db->disconnect;
+    is_deeply work_tables(), [], 'pulizia successiva accetta il conteggio aggiornato';
+    is scalar @{rows('battute')}, 1, 'dato pubblicato preservato';
+    $input->child('LIML_2.OUT')->remove;
 };
 
 subtest 'compensazione fallita conserva il journal e blocca nuovi caricamenti' => sub {

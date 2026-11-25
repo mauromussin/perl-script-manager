@@ -31,7 +31,10 @@ jobs:
           fi
 
       - name: Build production image
-        run: docker build --platform linux/amd64 --target production --tag perl-script-manager:ci .
+        run: |
+          docker build --platform linux/amd64 --target production --tag perl-script-manager:ci \
+            --build-arg "BUILD_COMMIT=$GITHUB_SHA" \
+            --build-arg "BUILD_COMMIT_MESSAGE=$(git log -1 --format=%B "$GITHUB_SHA")" .
 
       - name: Check production entry points
         run: |

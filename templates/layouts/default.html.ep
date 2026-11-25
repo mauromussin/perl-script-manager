@@ -22,5 +22,10 @@
   <main>
     <%= content %>
   </main>
+  <footer class="build-info">
+    <div>Versione: <%= build_info->{commit} // 'non disponibile' %></div>
+    <div>Commit:</div>
+    <pre><%= build_info->{message} // 'non disponibile' %></pre>
+  </footer>
 </body>
 </html>

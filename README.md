@@ -208,6 +208,9 @@ docker compose down
 
 GitHub Actions controlla la configurazione Compose, costruisce il target `production` e
 verifica la sintassi Perl contenuta nell'immagine. Non avvia database e non esegue `prove`.
+L'immagine incorpora l'identificativo e il testo completo del commit costruito:
+sono visibili in fondo alle pagine di Script Manager. Le build locali senza
+metadati mostrano `non disponibile`, senza usare il commit del repository host.
 Su push a `main` o a un tag `v*`, pubblica l'immagine runtime su
 `docker.io/mauromussin/perl-script-manager` con tag `latest` (per `main`), il tag Git
 (solo per push di tag `v*`) e `sha-<commit>`. Non pubblica piu su GHCR.
@@ -267,11 +270,18 @@ Su Windows, dalla root del repository in PowerShell, e disponibile il batch:
 Il batch usa `aggiorna.ps1`: seleziona per default lo ZIP
 `perl-script-manager*.zip` modificato piu di recente in Downloads, mostra il
 percorso, estrae in una cartella temporanea, verifica SHA256 e importa in Docker.
+Prima dello stop controlla PostgreSQL e attende, con verifiche ogni 10 secondi,
+che non vi siano esecuzioni `running` o `cancel_requested` ne job Minion attivi.
+Durante lo stop blocca temporaneamente le modifiche alle tabelle delle
+esecuzioni e della coda, impedendo nuovi avvii tra controllo e riavvio;
+le richieste gia accodate rimangono in coda. Se PostgreSQL o il controllo non
+sono disponibili il deploy si interrompe senza fermare i servizi. Esecuzioni
+rimaste erroneamente attive richiedono una verifica e, se appropriato,
+`docker compose exec app perl bin/procedure reconcile`.
 Poi ferma app e worker e li riavvia insieme con l'immagine locale
 `perl-script-manager:production`, senza build, pull o riavvio del database.
 Attende l'avvio dei container (massimo 60 secondi) e ne mostra lo stato.
-Eseguirlo solo quando non ci sono procedure in corso: il riavvio puo
-interromperle lasciando scritture parziali. Gli errori interrompono il batch
+Gli errori interrompono il batch
 con codice non zero; se avvengono dopo lo stop i servizi possono restare fermi.
 Lo ZIP originale e conservato, l'estrazione temporanea viene eliminata e
 nessuna impostazione di `.env` viene modificata.
@@ -859,6 +869,10 @@ docker compose --profile test run --rm test
 Il profilo locale `test` usa l'immagine di sviluppo e il servizio PostGIS già configurato.
 La suite non fa parte delle verifiche GitHub Actions.
 
+Il controllo di attesa del deploy si verifica separatamente su Windows con
+`powershell -NoProfile -File .\t\windows\deploy_lock.tests.ps1`: il test crea e
+rimuove un progetto Compose PostgreSQL temporaneo, senza usare i dati operativi.
+
 I test MyISAM reali sono opt-in: `TEST_MYSQL=1` crea e rimuove esclusivamente un
 database dal nome univoco `sm_test_mysql_<pid>_<numero>` oppure
 `sm_test_validation_<pid>_<numero>` sul server configurato.
@@ -959,6 +973,23 @@ confronta record OUT diversi. Campioni non identici che producono la stessa
 chiave convertita, input malformati e warning SQL restano bloccanti.
 Come nel legacy, l'unione a mezzanotte sposta solo `battute`, non
 `battute_doppie`, che conserva il riferimento alla traccia individuata.
+Per i nuovi record OUT, quando gli orari delle battute attraversano la
+mezzanotte UTC la data delle battute successive avanza di un giorno prima
+della conversione in ora italiana. Un salto all'indietro superiore a 12 ore
+rispetto all'orario precedente viene interpretato come attraversamento;
+salti minori non cambiano la data. Un successivo salto in avanti superiore
+a 12 ore o un secondo attraversamento rendono la sequenza ambigua e causano
+l'annullamento del caricamento.
+
+Se due tracce candidate all'unione contengono battute con la stessa chiave,
+la seconda copia viene eliminata soltanto se entrambe le tracce provengono
+dal caricamento corrente, i campioni OUT sono identici e tutti gli altri
+campi memorizzati coincidono. La deduplica e registrata nei WARNING e nel
+riepilogo `merged_duplicate_hits`. Se l'origine o l'uguaglianza non sono
+verificabili, le tracce e le battute restano separate: il WARNING e
+`midnight_merge_conflicts` segnalano la necessita di verifica prima delle
+elaborazioni successive. `hits` conta le battute caricate prima di questa
+eventuale deduplica; non viene scartato l'intero file OUT.
 
 Per MyISAM:
 
@@ -976,8 +1007,8 @@ Per MyISAM:
    di battute vengono deviate nello staging delle doppie. Quelle prive di
    battute mantengono lo staging principale. Entrambe ricevono il `flay_id`
    esistente, senza inserire una nuova traccia.
-4. Se richiesta, l'unione a mezzanotte mantiene il comportamento esistente,
-   comprese le tracce preesistenti. Prima delle modifiche ne vengono salvati
+4. Se richiesta, l'unione a mezzanotte considera anche le tracce preesistenti,
+   con le cautele sulle sovrapposizioni descritte sopra. Prima delle modifiche ne vengono salvati
    i record e le battute interessate, senza copiare tutto lo storico.
    Anche senza merge, i record `flay` da completare vengono salvati prima
    degli UPDATE; in caso di errore vengono ripristinati insieme ai flag.

@@ -3,6 +3,8 @@ header { display: flex; gap: 2rem; align-items: center; padding: .75rem 1.5rem; 
 header a { color: #fff; text-decoration: none; }
 header .brand { font-weight: 700; }
 main { max-width: 60rem; margin: 1.5rem auto; padding: 0 1rem; }
+.build-info { max-width: 60rem; margin: 2rem auto; padding: 0 1rem; color: #536171; font-size: .8rem; }
+.build-info pre { margin: .25rem 0 0; font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; }
 .cards { list-style: none; padding: 0; display: grid; gap: 1rem; }
 .cards li, table, .alert { background: #fff; border: 1px solid #d8dde3; border-radius: 6px; padding: 1rem; }
 table { width: 100%; border-collapse: collapse; padding: 0; }

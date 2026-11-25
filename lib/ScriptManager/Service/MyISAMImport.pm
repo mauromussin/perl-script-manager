@@ -325,7 +325,17 @@ sub publish ($self, $airports, $merge = undef, $complete = undef) {
     $self->ctx->log(info => 'Inserimento delle battute dei record duplicati in battute_doppie',
         operation => 'myisam_publish_duplicates');
     $self->_insert('battute_doppie', $offsets{battute_doppie});
-    $merge->() if $merge;
+    if ($merge) {
+        my $result = $merge->();
+        my $removed = ref($result) eq 'HASH' ? $result->{deduplicated} : 0;
+        if ($removed) {
+            die "Conteggio battute sovrapposte non valido\n"
+                unless $removed =~ /\A\d+\z/ && $removed <= $self->counts->{battute};
+            $self->counts->{battute} -= $removed;
+            $self->db->do('UPDATE ' . $self->table('state') . ' SET battute_count = ? WHERE id = ?',
+                undef, $self->counts->{battute}, 1);
+        }
+    }
     $self->ctx->check_cancel;
     {
         local $SIG{ALRM} = 'IGNORE';

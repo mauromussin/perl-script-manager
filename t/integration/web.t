@@ -18,6 +18,19 @@ $t->get_ok('/')->status_is(200)
     ->header_is('X-Content-Type-Options' => 'nosniff')
     ->header_like('Content-Security-Policy' => qr/default-src 'self'/);
 
+subtest 'running image commit is displayed and escaped' => sub {
+    my $info = $t->app->build_info;
+    my %saved = %$info;
+    %$info = (commit => 'abcdef123', message => "Correzione <script>\nSeconda riga");
+    $t->get_ok('/')->status_is(200)
+        ->text_is('.build-info div:first-child' => 'Versione: abcdef123')
+        ->text_is('.build-info pre' => "Correzione <script>\nSeconda riga")
+        ->element_exists_not('.build-info script');
+    %$info = ();
+    $t->get_ok('/')->status_is(200)->text_is('.build-info pre' => 'non disponibile');
+    %$info = %saved;
+};
+
 $t->get_ok('/procedures/test_sum')->status_is(200)->element_exists('input[name=a]');
 $t->get_ok('/procedures/test_disabled')->status_is(404);
 $t->get_ok('/procedures/../../etc/passwd')->status_is(404);

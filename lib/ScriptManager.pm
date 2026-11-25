@@ -5,6 +5,7 @@ use Log::Any::Adapter;
 use Mojo::File 'path';
 use Mojo::Pg;
 use Mojo::Pg::Migrations;
+use Mojo::Util 'decode';
 use ScriptManager::Repository::Executions;
 use ScriptManager::Service::ExecutionService;
 use ScriptManager::Service::ProcedureRegistry;
@@ -32,6 +33,18 @@ my %DEFAULTS = (
     # name => absolute path of programs ProcessRunner may execute
     process_commands => {},
 );
+
+sub _build_info ($directory) {
+    my %info;
+    for my $field (qw(commit message)) {
+        my $file = $directory->child($field);
+        next unless -e $file;
+        my $value = decode('UTF-8', $file->slurp);
+        $value =~ s/\s+\z//;
+        $info{$field} = $value if length $value;
+    }
+    return \%info;
+}
 
 sub startup ($self) {
     my $config = $self->_load_config;
@@ -74,6 +87,8 @@ sub startup ($self) {
     $self->helper(registry          => sub ($c) { $registry });
     $self->helper(execution_service => sub ($c) { $service });
     $self->helper(output_root       => sub ($c) { $output_root });
+    my $build_info = _build_info($self->home->child('build-info'));
+    $self->helper(build_info        => sub ($c) { $build_info });
     # Authentication is not defined yet (see docs, section 20).
     $self->helper(current_user => sub ($c) { 'anonymous' });
     $self->helper(is_final     => sub ($c, $status) { scalar grep { $_ eq $status } qw(completed failed cancelled timed_out) });

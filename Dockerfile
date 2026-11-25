@@ -62,7 +62,12 @@ COPY --chown=app:app migrations ./migrations
 COPY --chown=app:app public ./public
 COPY --chown=app:app templates ./templates
 COPY --from=dependency-lock --chown=app:app /app/cpanfile.snapshot ./cpanfile.snapshot
+ARG BUILD_COMMIT=""
+ARG BUILD_COMMIT_MESSAGE=""
 RUN mkdir -p var/input var/output var/logs \
+    && mkdir -p build-info \
+    && printf '%s' "$BUILD_COMMIT" > build-info/commit \
+    && printf '%s' "$BUILD_COMMIT_MESSAGE" > build-info/message \
     && perl -Ilib -c bin/app \
     && perl -Ilib -c bin/worker \
     && perl -Ilib -c bin/procedure \

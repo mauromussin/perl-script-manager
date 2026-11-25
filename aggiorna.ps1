@@ -6,6 +6,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $extraction = $null
 $previousImage = $env:APP_IMAGE
+. (Join-Path $PSScriptRoot 'docker\deploy-lock.ps1')
 
 function Invoke-Docker {
     & docker @args
@@ -54,8 +55,19 @@ try {
         throw 'Checksum immagine non valido: importazione annullata.'
     }
     Invoke-Docker load --input $tar
-    Write-Warning 'Riavvio app e worker: le procedure in corso possono essere interrotte. AutoCommit non viene annullato.'
-    Invoke-Docker compose stop app worker
+    $deployLock = Wait-DeployIdle
+    try {
+        if ($deployLock.HasExited) {
+            throw 'Connessione PostgreSQL di deploy interrotta prima dello stop.'
+        }
+        Invoke-Docker compose stop app worker
+        if ($deployLock.HasExited) {
+            throw 'Connessione PostgreSQL di deploy interrotta durante lo stop: verificare le esecuzioni.'
+        }
+    }
+    finally {
+        Close-DeployLock $deployLock
+    }
     Invoke-Docker compose up -d --no-deps --no-build --pull never --wait --wait-timeout 60 app worker
     Invoke-Docker compose ps app worker
     Write-Host 'Aggiornamento completato.'

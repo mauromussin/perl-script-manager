@@ -154,7 +154,23 @@ sub hit ($class, $sample, $date, $radar) {
         $altitude * 30.48, $class->local_datetime($date, $time)];
 }
 
-sub merge_midnight ($self, $ctx, $db, $airports) {
+sub _seconds ($time) {
+    return substr($time, 0, 2) * 3600 + substr($time, 2, 2) * 60 + substr($time, 4, 2);
+}
+
+sub _next_date ($date) {
+    my ($year, $month, $day) = $date =~ /(\d{4})(\d{2})(\d{2})/;
+    my @next = gmtime(timegm(0, 0, 0, $day, $month - 1, $year - 1900) + 86400);
+    return sprintf '%04d%02d%02d', $next[5] + 1900, $next[4] + 1, $next[3];
+}
+
+sub _hit_key ($time, $x, $y, $height) {
+    return undef if grep { !defined $_ } ($time, $x, $y, $height);
+    $time =~ s/://g;
+    return join ',', $time, map { sprintf '%.2f', $_ } ($x, $y, $height);
+}
+
+sub merge_midnight ($self, $ctx, $db, $airports, $source_sample) {
     $ctx->log(info => 'Ricerca tracce da unire a mezzanotte', operation => 'merge_midnight');
     my @codes = sort keys %$airports;
     my $placeholders = join ',', ('?') x @codes;
@@ -166,23 +182,69 @@ sub merge_midnight ($self, $ctx, $db, $airports) {
     my $previous = $db->prepare(
         'SELECT row_id FROM flay WHERE ora > ? AND flay = ? AND data = date_add(?, INTERVAL -1 DAY) AND flay_operation = ?'
     );
+    my $hits = $db->prepare('SELECT * FROM battute WHERE flay_id = ? FOR UPDATE');
+    my $delete = $db->prepare('DELETE FROM battute WHERE row_id = ? AND flay_id = ?');
     my $move = $db->prepare('UPDATE battute SET flay_id = ? WHERE flay_id = ?');
     my $mark = $db->prepare('UPDATE flay SET validation_fl = ?, validation_bt = ? WHERE row_id = ?');
+    my $result = {deduplicated => 0, skipped => 0};
     while (my $row = $early->fetchrow_arrayref) {
         $ctx->check_cancel;
         $ctx->debug_operation("Ricerca candidati mezzanotte per traccia $row->[0]");
         $previous->execute('23:00:00', @$row[1, 2, 3]);
         my $matches = $previous->fetchall_arrayref;
         if (@$matches == 1) {
-            $move->execute($matches->[0][0], $row->[0]);
+            my $previous_id = $matches->[0][0];
+            $hits->execute($previous_id);
+            my %prior;
+            while (my $hit = $hits->fetchrow_hashref) {
+                my $key = _hit_key(@$hit{qw(ora X_m Y_m H_m)});
+                $prior{$key} = $hit if defined $key;
+            }
+            $hits->execute($row->[0]);
+            my (@duplicates, $ambiguous);
+            while (my $hit = $hits->fetchrow_hashref) {
+                my $key = _hit_key(@$hit{qw(ora X_m Y_m H_m)});
+                next unless defined $key && exists $prior{$key};
+                my $old = $prior{$key};
+                my $old_sample = $source_sample->($previous_id, $key);
+                my $new_sample = $source_sample->($row->[0], $key);
+                my @fields = grep { $_ ne 'row_id' && $_ ne 'flay_id' } keys %$hit;
+                if (!defined $old_sample || !defined $new_sample || $old_sample ne $new_sample
+                    || grep { defined($hit->{$_}) != defined($old->{$_})
+                        || (defined($hit->{$_}) && $hit->{$_} ne $old->{$_}) } @fields) {
+                    $ambiguous = 1;
+                    last;
+                }
+                push @duplicates, $hit->{row_id};
+            }
+            if ($ambiguous) {
+                $result->{skipped}++;
+                $ctx->log(warning => "Tracce mezzanotte $row->[0] e $previous_id "
+                    . "(volo $row->[1], data $row->[2]) non unite: "
+                    . 'battute sovrapposte non verificabili; controllare i dati prima delle elaborazioni successive',
+                    operation => 'merge_midnight_conflict', track_id => $row->[0], previous_track_id => $previous_id);
+                next;
+            }
+            for my $id (@duplicates) {
+                $ctx->check_cancel;
+                my $removed = $delete->execute($id, $row->[0]);
+                die "Battuta sovrapposta $id non eliminata\n" unless $removed == 1;
+            }
+            $result->{deduplicated} += @duplicates;
+            $ctx->log(warning => "Tracce mezzanotte $row->[0] e $previous_id "
+                . "(volo $row->[1], data $row->[2]): "
+                . scalar(@duplicates) . ' battute OUT identiche sovrapposte rimosse dalla seconda traccia',
+                operation => 'merge_midnight_duplicates', track_id => $row->[0], previous_track_id => $previous_id,
+                count => scalar(@duplicates)) if @duplicates;
+            $move->execute($previous_id, $row->[0]);
             $mark->execute('M', 0, $row->[0]);
-            $ctx->log(info => "Traccia mezzanotte $row->[0] unita a $matches->[0][0]");
+            $ctx->log(info => "Traccia mezzanotte $row->[0] unita a $previous_id");
         } elsif (@$matches > 1) {
             $ctx->log(warning => "Traccia $row->[0]: piu candidati prima della mezzanotte, nessuna unione");
         }
     }
     $ctx->log(info => 'Unione delle tracce a mezzanotte completata', operation => 'merge_midnight_complete');
-    return;
+    return $result;
 }
 
 sub _store_track ($self, $db, $insert, $find, $track) {
@@ -306,6 +368,9 @@ sub run ($self, $ctx, $params) {
     my $repaired_tracks = 0;
     my $skipped_tracks = 0;
     my $skipped_hits = 0;
+    my %new_tracks;
+    my %midnight_samples;
+    my $merge_result = {deduplicated => 0, skipped => 0};
     my %loaded_airports;
     $ctx->log(info => "Radar $radar->{id}, revisione " . ($radar->{revision_date} // 'non documentata')
         . ", origine $radar->{x_m}/$radar->{y_m}; record duplicati destinati a battute_doppie");
@@ -375,12 +440,30 @@ sub run ($self, $ctx, $params) {
                 } elsif (!$repaired) {
                     $tracks++;
                     $file_tracks++;
+                    $new_tracks{$track_id} = 1;
                 }
                 my %seen_hits;
+                my $hit_date = $track->[1];
+                my $last_time = _seconds($track->[2]);
+                my $crossed_midnight = 0;
+                my $track_time = _seconds($track->[2]);
+                my $remember_samples = !$duplicate && !$repaired
+                    && ($track_time > 23 * 3600 || $track_time < 10 * 60);
                 for (my $offset = 34; $offset + 24 < length($line); $offset += 24) {
                     $ctx->debug_operation("Conversione e scrittura battuta: traccia $track_id, offset $offset");
                     my $sample = substr($line, $offset, 24);
-                    my $hit = __PACKAGE__->hit($sample, $track->[1], $radar);
+                    my $hit = __PACKAGE__->hit($sample, $hit_date, $radar);
+                    my $seconds = _seconds($hit->[0]);
+                    if ($seconds - $last_time < -12 * 3600) {
+                        die "Attraversamenti multipli della mezzanotte: $entry->{file}, riga $line_number\n"
+                            if $crossed_midnight;
+                        $hit_date = _next_date($hit_date);
+                        $hit->[4] = __PACKAGE__->local_datetime($hit_date, $hit->[0]);
+                        $crossed_midnight = 1;
+                    } elsif ($crossed_midnight && $seconds - $last_time > 12 * 3600) {
+                        die "Orari OUT ambigui dopo la mezzanotte: $entry->{file}, riga $line_number\n";
+                    }
+                    $last_time = $seconds;
                     my $key = join(',', @$hit[0 .. 3]);
                     my $index = ($offset - 34) / 24 + 1;
                     if (my $previous = $seen_hits{$key}) {
@@ -394,6 +477,10 @@ sub run ($self, $ctx, $params) {
                         next;
                     }
                     $seen_hits{$key} = {sample => $sample, index => $index};
+                    if ($remember_samples) {
+                        my $stored_key = _hit_key(@$hit[0 .. 3]);
+                        $midnight_samples{$track_id}{$stored_key} = $sample;
+                    }
                     my @fields = (undef, $hit->[0], $track_id, $hit->[1], $hit->[2],
                         $hit->[3] > 0 ? $hit->[3] : undef, $hit->[3],
                         (undef) x 5, $hit->[4]);
@@ -428,9 +515,19 @@ sub run ($self, $ctx, $params) {
             die "Caricamento battute rifiutato (duplicati o dati non validi), codice MySQL $warnings->[0][1]\n" if @$warnings;
         }
         my $merge_midnight = $params->{merge_midnight} && ($tracks || $duplicate_tracks || $repaired_tracks);
+        my $source_sample = sub ($id, $key) {
+            if ($session) {
+                my ($min, $max) = @{$session->bounds->{flay}};
+                return undef unless $min && $id >= $min && $id <= $max;
+                $id -= $min - 1;
+            } else {
+                return undef unless $new_tracks{$id};
+            }
+            return $midnight_samples{$id}{$key};
+        };
         if ($session) {
             my $merge = $merge_midnight
-                ? sub { $self->merge_midnight($ctx, $db, \%loaded_airports) } : undef;
+                ? sub { $merge_result = $self->merge_midnight($ctx, $db, \%loaded_airports, $source_sample) } : undef;
             $session->publish(\%loaded_airports, $merge,
                 sub ($id, $track) { $self->_complete_track($ctx, $db, $id, $track) });
             $tracks -= $session->reused_tracks;
@@ -438,7 +535,7 @@ sub run ($self, $ctx, $params) {
             $duplicate_tracks += $session->reused_tracks - $session->repaired_tracks;
             $duplicate_hits += $session->diverted_hits;
         } else {
-            $self->merge_midnight($ctx, $db, \%loaded_airports) if $merge_midnight;
+            $merge_result = $self->merge_midnight($ctx, $db, \%loaded_airports, $source_sample) if $merge_midnight;
             $ctx->check_cancel;
             $ctx->log(info => 'Conferma transazione MySQL (commit)', operation => 'commit');
             {
@@ -506,11 +603,17 @@ sub run ($self, $ctx, $params) {
     $message .= "; $duplicate_tracks record duplicati, $duplicate_hits battute in battute_doppie" if $duplicate_tracks;
     $message .= "; $skipped_tracks tracce senza battute ignorate" if $skipped_tracks;
     $message .= "; $skipped_hits battute identiche ripetute ignorate" if $skipped_hits;
+    $message .= "; $merge_result->{deduplicated} battute sovrapposte rimosse durante l'unione a mezzanotte"
+        if $merge_result->{deduplicated};
+    $message .= "; $merge_result->{skipped} unioni a mezzanotte non eseguite: verificare le sovrapposizioni"
+        if $merge_result->{skipped};
     return {success => 1, message => $message, data => {
         tracks => $tracks, hits => $hits, duplicate_tracks => $duplicate_tracks, duplicate_hits => $duplicate_hits,
         skipped_tracks => $skipped_tracks,
         repaired_tracks => $repaired_tracks,
         skipped_hits => $skipped_hits,
+        ($merge_result->{deduplicated} ? (merged_duplicate_hits => $merge_result->{deduplicated}) : ()),
+        ($merge_result->{skipped} ? (midnight_merge_conflicts => $merge_result->{skipped}) : ()),
     }};
 }
 
