@@ -9,6 +9,17 @@ use ScriptManager::Service::CorrelazioneReview;
 
 my @STATUSES = qw(queued running completed failed cancel_requested cancelled timed_out);
 
+sub duplicate_options ($c) {
+    my $id = $c->param('confirm_completed_execution');
+    return defined $id && ($c->param('confirm_duplicate') // '') eq '1'
+        ? (confirm_completed_execution => $id) : ();
+}
+
+sub render_duplicate ($c, $proc, $duplicate) {
+    return $c->render('executions/confirm_duplicate', procedure => $proc,
+        duplicate => $duplicate, form => $c->req->body_params, status => 409);
+}
+
 sub create ($c) {
     return $c->render(text => 'Token CSRF non valido', status => 403)
         if $c->validation->csrf_protect->has_error('csrf_token');
@@ -18,7 +29,7 @@ sub create ($c) {
     my $input     = $proc->{code} eq 'correla_eventi_cmp'
         ? ScriptManager::Service::CorrelazioneSetup->new->form_input($c->req->body_params)
         : $validator->from_form($c->req->body_params);
-    my %options = (requested_by => $c->current_user);
+    my %options = (requested_by => $c->current_user, duplicate_options($c));
     if ($proc->{code} eq 'carica_db') {
         my $values = $c->req->body_params->every_param('confirm_timeout_bypass');
         return $c->render(text => 'Conferma timeout non valida', status => 422)
@@ -30,10 +41,13 @@ sub create ($c) {
     }
     my $result = $c->execution_service->submit($proc->{code}, $input, %options);
 
+    return render_duplicate($c, $proc, $result->{duplicate}) if $result->{duplicate};
     return ScriptManager::Controller::Catalog::render_eventi($c, $proc, $input, $result->{errors})
         if $result->{errors} && $proc->{code} eq 'carica_eventi_cmp';
     return ScriptManager::Controller::Catalog::render_correlation($c, $proc, $input, $result->{errors})
         if $result->{errors} && $proc->{code} eq 'correla_eventi_cmp';
+    return ScriptManager::Controller::Catalog::render_laeq($c, $proc, $input, $result->{errors})
+        if $result->{errors} && $proc->{code} eq 'calcola_laeq';
     return $c->render(
         'catalog/show',
         procedure => $proc,
@@ -77,13 +91,66 @@ sub index ($c) {
 sub show ($c) {
     my $exec = $c->repo->get_execution($c->param('id')) or return $c->reply->not_found;
     my $final = $c->is_final($exec->{status});
+    my $duplicate_source;
+    if (($exec->{error_code} // '') eq 'duplicate_confirmation_required') {
+        my $proc = $c->registry->get($exec->{procedure_code});
+        if ($proc && !$c->registry->validator($proc)->has_sensitive) {
+            my ($event) = grep { ($_->{metadata}{operation} // '') eq 'duplicate_detected' }
+                @{$c->repo->list_events($exec->{id})};
+            $duplicate_source = $event->{metadata}{source_execution_id} if $event;
+        }
+    }
     return $c->render(
         execution => $exec,
         events    => $c->repo->latest_events($exec->{id}),
         artifacts => $c->repo->list_artifacts($exec->{id}),
         refresh   => $final ? 0 : 2,
         can_bypass_timeout => $c->execution_service->can_bypass_timeout($exec),
+        duplicate_confirmation_source => $duplicate_source,
     );
+}
+
+sub confirm_queued_duplicate ($c) {
+    return $c->render(text => 'Token CSRF non valido', status => 403)
+        if $c->validation->csrf_protect->has_error('csrf_token');
+    return $c->render(text => 'Confermare esplicitamente la riesecuzione', status => 422)
+        unless ($c->param('confirm_duplicate') // '') eq '1';
+    my $exec = $c->repo->get_execution($c->param('id')) or return $c->reply->not_found;
+    return $c->render(text => 'Conferma non disponibile per questa esecuzione', status => 409)
+        unless $exec->{status} eq 'failed'
+        && ($exec->{error_code} // '') eq 'duplicate_confirmation_required';
+    my $proc = $c->registry->get($exec->{procedure_code});
+    return $c->render(text => 'Procedura non disponibile o con parametri sensibili da reinserire', status => 409)
+        unless $proc && !$c->registry->validator($proc)->has_sensitive;
+    if (defined $exec->{queue_target}) {
+        my $host = $ENV{MYSQL_HOST} // '';
+        my $port = $ENV{MYSQL_PORT} // 3306;
+        return $c->render(text => 'Target MySQL cambiato: inviare una nuova richiesta', status => 409)
+            unless $host =~ /\A[A-Za-z0-9.:-]+\z/ && $port =~ /\A\d+\z/
+            && join(':', lc($host), 0 + $port, $exec->{parameters}{database} // '') eq $exec->{queue_target};
+    }
+    my $events = $c->repo->list_events($exec->{id});
+    my ($duplicate) = grep { ($_->{metadata}{operation} // '') eq 'duplicate_detected' } @$events;
+    return $c->render(text => 'Riferimento alla precedente esecuzione non disponibile', status => 409)
+        unless $duplicate && $duplicate->{metadata}{source_execution_id};
+    my %options = (requested_by => $c->current_user,
+        confirm_completed_execution => $duplicate->{metadata}{source_execution_id});
+    if ($exec->{timeout_bypassed}) {
+        my ($bypass) = grep { ($_->{metadata}{operation} // '') eq 'timeout_bypass' } @$events;
+        return $c->render(text => 'Conferma del timeout non disponibile', status => 409) unless $bypass;
+        if (($bypass->{metadata}{source} // '') eq 'initial_confirmation') {
+            $options{timeout_bypass_confirmed} = 1;
+        } else {
+            my $source_id = $bypass->{metadata}{source_execution_id};
+            my $source = $c->repo->get_execution($source_id);
+            return $c->render(text => 'Conferma del timeout non piu valida', status => 409)
+                unless $c->execution_service->can_bypass_timeout($source);
+            $options{timeout_bypass_from} = $source_id;
+        }
+    }
+    my $result = $c->execution_service->submit($proc->{code}, $exec->{parameters}, %options);
+    return $c->render(json => {errors => $result->{errors}}, status => 422) if $result->{errors};
+    return $c->redirect_to('execution', id => $result->{id});
 }
 
 sub correlation_results ($c) {
@@ -124,7 +191,9 @@ sub correlation_activate ($c) {
         source_execution_id => $execution->{id},
         activations => $c->req->body_params->every_param('activations'),
         confirm_activation => Mojo::JSON::true,
-    }, requested_by => $c->current_user);
+    }, requested_by => $c->current_user, duplicate_options($c));
+    return render_duplicate($c, $c->registry->get('attualizza_correlazione_cmp'), $result->{duplicate})
+        if $result->{duplicate};
     return $c->render(json => {errors => $result->{errors}}, status => 422) if $result->{errors};
     return $c->redirect_to('execution', id => $result->{id});
 }
@@ -138,7 +207,9 @@ sub retry_without_timeout ($c) {
     return $c->render(text => 'Confermare esplicitamente la disattivazione del timeout', status => 422)
         unless ($c->param('confirm_timeout_bypass') // '') eq '1';
     my $result = $c->execution_service->submit($exec->{procedure_code}, {},
-        requested_by => $c->current_user, timeout_bypass_from => $exec->{id});
+        requested_by => $c->current_user, timeout_bypass_from => $exec->{id}, duplicate_options($c));
+    return render_duplicate($c, $c->registry->get($exec->{procedure_code}), $result->{duplicate})
+        if $result->{duplicate};
     return $c->render(json => {errors => $result->{errors}}, status => 422) if $result->{errors};
     return $c->redirect_to('execution', id => $result->{id});
 }

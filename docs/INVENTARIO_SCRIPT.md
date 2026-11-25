@@ -36,6 +36,35 @@ il gruppo `02-carica*.pl`, le due varianti `03-valida_tracce*` e
 gli altri script
 non descritti qui restano da inventariare.
 
+## Gruppo 16-calcolo LAeq aeroportuale
+
+- Percorsi: `legacy/scripts/16-calcolo_LAeq_aeroportuale_ev_correlati.pl` e
+  `legacy/scripts/16-calcolo_LAeq_aeroportuale_ev_correlati_night.pl`.
+- Stato: analisi statica; calcolo integrato in `ScriptManager::Command::CalcolaLAeq`.
+  Le varianti legacy non sono state eseguite ne modificate; non si dichiara
+  equivalenza integrale.
+- Input legacy: file di parametri con database, aeroporto, stazione `c_cab`,
+  date e credenziali; connessione DBI MySQL. La prima variante legge
+  `st_eventi_cmp`, filtra `correlato=1` e scrive `st_laeq`: usa
+  `10*log10(sum(10^(SEL/10))/57600)` per 06-22 e denominatore 28800 per
+  22-06. Raggruppa pero la notte per data di calendario e accoppia
+  posizionalmente i risultati diurni e notturni.
+- La variante night legge `st_eventi_cmp_2ore_avanti` e scrive
+  `st_laeq_n_22day_before`, per anticipare l'attribuzione della notte.
+  Richiede quindi una tabella con orari precedentemente spostati.
+- Scelte confermate per l'integrazione: eventi originali con abbinamento
+  `battute_eventi_cmp` della 14, non flag `correlato`; notte continua
+  22-06 associata alla data delle 22; durate fisse 16 e 8 ore; destinazione
+  `st_laeq` con `TR=D/N`. Nessun accoppiamento posizionale. Il 31 dicembre
+  usa anche il database successivo. Si saltano i risultati esistenti salvo
+  sovrascrittura confermata; nessun risultato e inventato senza eventi.
+- Scritture in AutoCommit, con possibili effetti parziali su MyISAM; la
+  creazione della tabella mancante e separata e richiede conferma esplicita.
+  I lock proteggono solo le operazioni gestite dallo Script Manager.
+  Il limite di dati locali senza offset e le altre condizioni operative sono
+  descritti nel README. Verifiche integrate su database isolati in
+  `t/integration/laeq.t`; non sono test di caratterizzazione dei legacy.
+
 ## Gruppo 02-carica*
 
 - Stato: analisi statica completata; test di caratterizzazione non eseguiti.
@@ -753,7 +782,8 @@ procedure eseguibili dell'applicazione.
   o correlazione operativa durante i test.
 - Il cruscotto correlazioni legge `st_lva` attuale per aeroporto e anno:
   date presenti nell'aeroporto, righe per stazione e colori per presenza
-  LVAc/LVAnc. Il rosso segnala l'ultima richiesta terminata con errore o
+  LVAc/LVAnc; i giorni senza dati della stazione non mostrano un rettangolo,
+  salvo errori. Il rosso segnala l'ultima richiesta terminata con errore o
   timeout nello storico applicativo per stazione e intervallo; non attesta
   quale singolo giorno abbia causato l'errore e non include script esterni.
   Su conferma, un comando accodato elimina gli abbinamenti di un giorno e

@@ -97,7 +97,8 @@ Calcola LVA e LVAn per giorno, distinguendo eventi correlati e totale degli
 eventi: quest'ultimo corrisponde al valore chiamato non correlato dal legacy.
 Il totale viene salvato anche per giorni senza correlazioni. Dopo il
 completamento, **Verifica e attualizza LVA/LVAn** mostra per ogni stazione e
-giorno LVAnc, LVAc, differenza, eventi correlati/totali (Ec/E), LVAn
+giorno con risultati o conteggi disponibili LVAnc, LVAc, differenza,
+eventi correlati/totali (Ec/E), LVAn
 correlato e totale, numero di eventi notturni senza abbinamento e numero
 totale di eventi notturni. La notte comprende le ore 23:00-05:59 dello stesso
 giorno. Valori e percentuali sono visualizzati con due cifre decimali; i
@@ -111,8 +112,9 @@ conservano i valori attuali precedenti.
 
 Il **Cruscotto correlazioni** seleziona aeroporto e anno dal nome del
 database e mostra, per ogni stazione, le date con almeno un LVA attuale
-nell'aeroporto. Verde: LVAc e LVAnc presenti; giallo: solo LVAnc;
-bianco: nessun dato o LVAnc mancante. Rosso: ultima correlazione terminata
+nell'aeroporto. Per ciascuna stazione i giorni senza LVA non mostrano un
+rettangolo, salvo errori. Verde: LVAc e LVAnc presenti; giallo: solo LVAnc;
+bianco: LVAnc mancante. Rosso: ultima correlazione terminata
 con errore o timeout per un intervallo che comprende quel giorno; la cella
 apre i log. L'errore e attribuito all'intervallo richiesto, non al singolo
 giorno. Annullamenti e richieste in corso non sono errori. Il cruscotto
@@ -138,6 +140,47 @@ Correlazione, attualizzazione ed eliminazione condividono la coda per database. 
 sono in AutoCommit: con MyISAM errori, timeout o annullamenti possono lasciare
 cancellazioni o aggiornamenti parziali. Verificare log e dati prima di riprovare;
 gli script esterni non partecipano alla coda applicativa.
+
+### LAeq aeroportuale: procedura 16
+
+Selezionare aeroporto, database `<IATA>_<AAAA>_bruma`, stazioni e intervallo
+di date dello stesso anno. Per ogni stazione e giorno la procedura usa
+gli eventi di `st_eventi_cmp` con almeno un abbinamento in
+`battute_eventi_cmp` (procedura 14 integrata), contando una sola volta
+ciascun evento anche se ha piu abbinamenti. Classifica gli eventi secondo
+la loro ora iniziale:
+
+- diurno `D`: dalle 06:00 incluse alle 22:00 escluse, durata 57600 s;
+- notturno `N`: dalle 22:00 incluse alle 06:00 escluse del giorno seguente,
+  durata 28800 s, attribuito alla data di inizio della notte.
+
+Il valore e `10*log10(sum(10^(SEL/10))/durata)`. Non viene scritto un
+valore quando non ci sono eventi correlati; un SEL mancante blocca il
+calcolo prima delle scritture. Le durate sono fisse anche nei cambi ora:
+la completezza delle misure non e verificata e, senza offset, le due ore
+ripetute nel cambio solare non sono necessariamente distinguibili.
+La notte del 31 dicembre legge dalle 00 alle 06 il database convenzionale
+dell'anno successivo, che deve essere accessibile e avere le tabelle degli
+eventi e degli abbinamenti. L'operazione attende il proprio turno nella coda
+del database principale; se quello successivo e occupato o ha lavori in coda
+viene bloccata. Gli script esterni non partecipano ai lock applicativi.
+
+I risultati sono scritti in `st_laeq` con `id_stazione=c_cab` e `TR=D/N`.
+La pagina propone la creazione della tabella vuota solo dopo conferma,
+copiando lo schema di `mxp_2024_bruma.st_laeq`; occorrono lettura del
+riferimento e permesso CREATE. Le righe gia presenti vengono saltate,
+salvo conferma esplicita di sovrascrittura: in tal caso si aggiorna la
+coppia stazione/giorno/periodo e si rimuovono eventuali duplicati. I risultati
+senza nuovi eventi non vengono cancellati. Il log riporta valori e conteggi;
+il report scaricabile `laeq.json` specifica anche se ogni valore calcolato
+e stato inserito, sostituito o saltato. Per le righe saltate il valore nel
+report e quello ricalcolato, non necessariamente quello gia salvato.
+Dopo modifiche o eliminazioni delle correlazioni, i LAeq precedenti non
+vengono aggiornati automaticamente: verificare i risultati e ricalcolare
+con sovrascrittura quando opportuno. Se non restano eventi correlati, il
+vecchio valore rimane e va verificato separatamente.
+Con MyISAM e AutoCommit errori, timeout o annullamenti possono lasciare
+modifiche parziali: controllare log e dati prima di ripetere l'operazione.
 
 ### Selezione delle tracce radar
 
@@ -299,6 +342,33 @@ H_m non viene modificato. Il dettaglio del salvataggio mostra il lotto in
 corso al 50%, senza simulare una percentuale temporale. Il reset degli
 stati/date/pista/SID segue quello delle battute. Restano AutoCommit e
 possibili scritture parziali; nessun nuovo indice o modifica allo schema radar.
+
+### Conferma delle riesecuzioni
+
+Prima di avviare una procedura, lo storico viene controllato per cercare
+un'esecuzione `completed` della stessa procedura, con lo stesso target
+host/porta/database e gli stessi parametri dopo validazione. Dal confronto
+sono esclusi `overwrite` e le conferme operative; gli array sono confrontati
+nell'ordine registrato. Fallimenti, timeout e annullamenti non contano come
+esecuzioni riuscite. Non si deduce il server dei vecchi log senza target.
+I parametri sensibili non sono conservati: una corrispondenza che li
+coinvolge e quindi solo possibile e richiede comunque conferma.
+File e dati esterni possono essere cambiati anche a parametri identici.
+
+Il modulo web mostra l'esecuzione precedente e richiede una conferma;
+la conferma autorizza soltanto la riesecuzione e **non cambia** l'opzione
+Sovrascrivi o il comportamento specifico della procedura. La conferma e
+registrata nel log. Se una richiesta identica termina mentre un'altra e in
+coda, quest'ultima viene fermata prima del comando con errore
+`duplicate_confirmation_required`: ripetere la richiesta dalla funzione
+originale e confermare oppure confermare direttamente nella pagina
+dell'esecuzione bloccata. Le eventuali scelte sul timeout sono mantenute;
+per parametri sensibili occorre ripetere la richiesta reinserendoli.
+
+L'API risponde con HTTP 409 e `duplicate.id`; per confermare reinviare gli
+stessi parametri con l'header `X-Confirm-Completed-Execution: <id>`.
+Da CLI ripetere il comando aggiungendo `--confirm-completed-execution <id>`.
+Il riferimento viene verificato rispetto alla richiesta corrente.
 
 ### Coda per database e controllo preventivo della durata
 

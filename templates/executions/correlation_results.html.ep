@@ -12,8 +12,13 @@
   <%= csrf_field %>
 % for my $result (@$results) {
   <h2>Stazione <%= $result->{station_code} %></h2>
+% if (@{$result->{rows}}) {
+% if ($result->{activatable}) {
   <label><input type="checkbox" name="activations" value="<%= join ':', @$result{qw(log_id station_code)} %>">
     Accetta i risultati della stazione</label>
+% } else {
+  <p>Nessun valore LVA/LVAn da attualizzare.</p>
+% }
   <div class="correlation-results-table" role="region" aria-label="Risultati giornalieri" tabindex="0">
   <table>
     <thead><tr><th>Data</th><th>LVAnc</th><th>LVAc</th><th>LVAnc-LVAc</th><th>Ec/E</th><th>LVAn non correlato (totale)</th><th>LVAn correlato</th><th>Eventi notturni non correlati</th><th>Eventi notturni totali</th></tr></thead>
@@ -35,7 +40,12 @@
     </tbody>
   </table>
   </div>
+% } else {
+  <p>Nessun dato nel periodo.</p>
 % }
+% }
+% if (grep { $_->{activatable} } @$results) {
   <label><input type="checkbox" name="confirm_activation" value="1" required> Confermo l'attualizzazione selezionata</label>
   <button type="submit">Accoda attualizzazione</button>
+% }
 </form>

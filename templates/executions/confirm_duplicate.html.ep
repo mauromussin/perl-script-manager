@@ -1,0 +1,33 @@
+% layout 'default';
+% title 'Conferma riesecuzione';
+<h1>Conferma riesecuzione</h1>
+<div class="alert" role="alert">
+  <p>Esiste una <%= $duplicate->{uncertain} ? 'possibile' : '' %> esecuzione identica gia completata:
+    <a href="<%= url_for 'execution', id => $duplicate->{id} %>"><%= $duplicate->{id} %></a>
+    (<%= $duplicate->{finished_at} // 'data non disponibile' %>).</p>
+% if ($duplicate->{uncertain}) {
+  <p>I parametri sensibili non sono conservati nei log: non e possibile verificarne l'identita.</p>
+% }
+  <p>La conferma autorizza una nuova esecuzione di <%= $procedure->{name} %>.
+    Non attiva la sovrascrittura: restano valide le opzioni gia selezionate.
+    File e dati esterni potrebbero essere cambiati.</p>
+</div>
+<form method="post" action="<%= $c->req->url->path->to_string %>">
+  <%= csrf_field %>
+% my $properties = $procedure->{parameter_schema}{properties} // {};
+% for my $name (@{$form->names}) {
+%   next if $name eq 'csrf_token' || $name eq 'confirm_completed_execution' || $name eq 'confirm_duplicate';
+%   if (($properties->{$name} // {})->{'x-sensitive'}) {
+  <label><%= $properties->{$name}{title} // $name %>
+    <input type="password" name="<%= $name %>" required autocomplete="off"></label>
+%   } else {
+%     for my $value (@{$form->every_param($name)}) {
+  <input type="hidden" name="<%= $name %>" value="<%= $value %>">
+%     }
+%   }
+% }
+  <input type="hidden" name="confirm_completed_execution" value="<%= $duplicate->{id} %>">
+  <label><input type="checkbox" name="confirm_duplicate" value="1" required>
+    Confermo la riesecuzione con le opzioni gia selezionate</label>
+  <button type="submit">Conferma e avvia</button>
+</form>

@@ -128,6 +128,25 @@ sub weather_day ($self, $target, $day) {
     }, $target, $day)->expand->hash;
 }
 
+sub completed_duplicate ($self, $code, $target, $parameters, $excluded, $id = undef) {
+    return undef if defined $id && !$self->is_uuid($id);
+    my $expression = 'e.parameters' . (' - ?::text' x @$excluded);
+    my $sql = 'select e.id, e.finished_at from executions e '
+        . q{join procedures p on p.id=e.procedure_id where p.code = ? and e.status = 'completed' }
+        . 'and e.queue_target is not distinct from ?::text '
+        . "and ($expression) = ?::jsonb";
+    $sql .= ' and e.id = ?::uuid' if defined $id;
+    $sql .= ' order by e.finished_at desc nulls last, e.id desc limit 1';
+    return $self->pg->db->query($sql, $code, $target, @$excluded,
+        {json => $parameters}, defined $id ? ($id) : ())->expand->hash;
+}
+
+sub has_duplicate_confirmation ($self, $id) {
+    return $self->pg->db->query(
+        q{select 1 from execution_events where execution_id = ?
+          and metadata->>'operation' = 'duplicate_confirmed' limit 1}, $id)->hash ? 1 : 0;
+}
+
 sub create_execution ($self, %args) {
     my $db = $self->pg->db;
     my $tx = $db->begin;

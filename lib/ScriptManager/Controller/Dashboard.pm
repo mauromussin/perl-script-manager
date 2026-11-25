@@ -2,6 +2,7 @@ package ScriptManager::Controller::Dashboard;
 use Mojo::Base 'Mojolicious::Controller', -signatures;
 
 use ScriptManager::Exception;
+use ScriptManager::Controller::Executions ();
 use ScriptManager::Service::Dashboard;
 use ScriptManager::Service::CorrelazioniDashboard;
 use ScriptManager::Service::CorrelazioneDelete;
@@ -54,7 +55,9 @@ sub correlation_delete ($c) {
         qw(airport database day station_id station_code snapshot)};
     $params->{confirm_deletion} = Mojo::JSON::true;
     my $result = $c->execution_service->submit(elimina_correlazione_cmp => $params,
-        requested_by => $c->current_user);
+        requested_by => $c->current_user, ScriptManager::Controller::Executions::duplicate_options($c));
+    return ScriptManager::Controller::Executions::render_duplicate(
+        $c, $c->registry->get('elimina_correlazione_cmp'), $result->{duplicate}) if $result->{duplicate};
     return $c->render(json => {errors => $result->{errors}}, status => 422) if $result->{errors};
     return $c->redirect_to('execution', id => $result->{id});
 }

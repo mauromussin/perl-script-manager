@@ -43,7 +43,7 @@ subtest 'start and follow an execution' => sub {
 
 subtest 'execution page shows only the latest 25 events in reverse chronological order' => sub {
     my $repo = $t->app->repo;
-    my $id = $t->app->execution_service->submit(test_sum => {a => 1, b => 2})->{id};
+    my $id = $t->app->execution_service->submit(test_sum => {a => 3, b => 4})->{id};
     my $before = scalar @{$repo->list_events($id)};
     $t->app->pg->db->query(q{
         insert into execution_events (execution_id,level,message,created_at)

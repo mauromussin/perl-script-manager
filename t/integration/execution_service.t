@@ -419,11 +419,13 @@ subtest '04: conferma oltre stima disattiva il timeout reale solo per la nuova r
         @{$repository->list_events($retry)};
     is $audit->{metadata}{source_execution_id}, $source, 'conferma tracciata con origine';
     is $repository->get_execution($retry)->{requested_by}, 'confirmed-user';
-    my $normal = $svc->submit(valida_battute => $exec->{parameters})->{id};
+    my $normal = $svc->submit(valida_battute => $exec->{parameters},
+        confirm_completed_execution => $retry)->{id};
     ok !$repository->get_execution($normal)->{timeout_bypassed}, 'un normale Riesegui non eredita il bypass';
     is $svc->execute($normal), 'failed', 'il controllo della stima resta attivo nelle richieste ordinarie';
     $cancel_run = 1;
-    my $cancelled = $svc->submit(valida_battute => {}, timeout_bypass_from => $source)->{id};
+    my $cancelled = $svc->submit(valida_battute => {}, timeout_bypass_from => $source,
+        confirm_completed_execution => $retry)->{id};
     is $svc->execute($cancelled), 'cancelled', 'bypass non disattiva la cancellazione cooperativa';
     eval { $svc->submit(test_async => {}, timeout_bypass_from => $source) };
     ok(ScriptManager::Exception->caught($@, 'timeout_bypass_not_allowed'), 'bypass non esteso ad altre procedure');
@@ -454,8 +456,10 @@ subtest '08: conferma senza storico elimina timeout reale, non la cancellazione'
     is $svc->execute($id), 'completed', 'supera il timeout configurato di 1 secondo';
     my ($audit) = grep { ($_->{metadata}{operation} // '') eq 'timeout_bypass' } @{$repository->list_events($id)};
     is $audit->{metadata}{source_execution_id}, $source, 'conferma tracciata';
-    my $head = $svc->submit(rettifica_quote => {database => 'height_timeout'})->{id};
-    my $retry = $svc->submit(rettifica_quote => {}, timeout_bypass_from => $source)->{id};
+    my $head = $svc->submit(rettifica_quote => {database => 'height_timeout'},
+        confirm_completed_execution => $id)->{id};
+    my $retry = $svc->submit(rettifica_quote => {}, timeout_bypass_from => $source,
+        confirm_completed_execution => $id)->{id};
     is $svc->execute($retry), 'queued', 'conferma rispetta la coda FIFO';
     is $svc->cancel($head), 'cancelled';
     $cancel_run = 1;
@@ -495,11 +499,12 @@ subtest '02: conferma preventiva limita il bypass alla richiesta' => sub {
     is $svc->execute($id), 'queued', 'non supera la coda';
     is $svc->cancel($head), 'cancelled';
     is $svc->execute($id), 'completed', 'supera il timeout configurato';
-    my $normal = $svc->submit(carica_db => $input)->{id};
+    my $normal = $svc->submit(carica_db => $input, confirm_completed_execution => $id)->{id};
     ok !$repository->get_execution($normal)->{timeout_bypassed}, 'timeout normale ancora attivo';
     is $svc->execute($normal), 'timed_out';
     $cancel_run = 1;
-    my $cancelled = $svc->submit(carica_db => $input, timeout_bypass_confirmed => 1)->{id};
+    my $cancelled = $svc->submit(carica_db => $input, timeout_bypass_confirmed => 1,
+        confirm_completed_execution => $id)->{id};
     is $svc->execute($cancelled), 'cancelled', 'cancellazione ancora attiva';
     for my $case ([test_async => 1], [carica_db => 0]) {
         eval { $svc->submit($case->[0] => $input, timeout_bypass_confirmed => $case->[1]) };
@@ -547,11 +552,12 @@ subtest '02: bypass dopo timeout, con stessi parametri e coda' => sub {
     is $audit->{metadata}{source_execution_id}, $source, 'origine registrata';
     is $execution->{requested_by}, 'confirmed-user', 'utente registrato';
     unlike $audit->{message}, qr/stima/, 'nessun riferimento alla stima assente nella 02';
-    my $normal = $svc->submit(carica_db => $input)->{id};
+    my $normal = $svc->submit(carica_db => $input, confirm_completed_execution => $retry)->{id};
     ok !$repository->get_execution($normal)->{timeout_bypassed}, 'riesecuzione normale non eredita il bypass';
     is $svc->execute($normal), 'timed_out', 'timeout attivo sulle richieste ordinarie';
     $cancel_run = 1;
-    my $cancelled = $svc->submit(carica_db => {}, timeout_bypass_from => $source)->{id};
+    my $cancelled = $svc->submit(carica_db => {}, timeout_bypass_from => $source,
+        confirm_completed_execution => $retry)->{id};
     is $svc->execute($cancelled), 'cancelled', 'cancellazione ancora attiva';
 
     {
@@ -574,7 +580,7 @@ subtest '02: bypass dopo timeout, con stessi parametri e coda' => sub {
         ok(ScriptManager::Exception->caught($@, 'timeout_bypass_not_allowed'), 'invio rifiutato');
     }
     for my $operation (qw(commit commit_complete rollback_failed myisam_publish_complete)) {
-        my $old = $svc->submit(carica_db => $input)->{id};
+        my $old = $svc->submit(carica_db => $input, confirm_completed_execution => $retry)->{id};
         $repository->add_event($old, 'warning', 'test evento precedente', metadata => {operation => $operation});
         $repository->mark_finished($old, status => 'timed_out', error_code => 'timed_out');
         ok !$svc->can_bypass_timeout($repository->get_execution($old)),
@@ -608,7 +614,8 @@ subtest '10: conferma puo riprendere una normalizzazione terminata per timeout' 
         @{$repository->list_events($retry)};
     is $audit->{metadata}{source_execution_id}, $source, 'conferma tracciata con origine';
 
-    my $estimate = $svc->submit(correggi_quote => {database => 'quote_timeout'})->{id};
+    my $estimate = $svc->submit(correggi_quote => {database => 'quote_timeout'},
+        confirm_completed_execution => $retry)->{id};
     $repository->mark_finished($estimate, status => 'failed', exit_code => 1,
         error_code => 'timeout_estimate_unavailable');
     ok $svc->can_bypass_timeout($repository->get_execution($estimate)),

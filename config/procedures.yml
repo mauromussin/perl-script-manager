@@ -333,6 +333,34 @@ procedures:
         station_code: {type: string, pattern: '^[0-9]{1,10}$'}
         snapshot: {type: string, pattern: '^[0-9a-f]{64}$'}
         confirm_deletion: {type: boolean, enum: [true]}
+  - code: calcola_laeq
+    name: 16-calcola LAeq aeroportuale
+    description: >-
+      Calcola il LAeq degli eventi correlati dalla procedura 14 per stazione e giorno:
+      06-22 diurno e notte continua 22-06 attribuita al giorno di inizio.
+      I risultati esistenti sono saltati, salvo sovrascrittura esplicita.
+      AutoCommit: errori e annullamenti possono lasciare risultati parziali.
+    enabled: true
+    handler_class: ScriptManager::Command::CalcolaLAeq
+    queue_by_database: true
+    execution_mode: async
+    timeout_seconds: 3600
+    exclusive: true
+    retention_days: 7
+    parameter_schema:
+      type: object
+      required: [database, airport, date_from, date_to, stations]
+      properties:
+        database: *runway_database
+        airport: *runway_airport
+        date_from: {type: string, format: date}
+        date_to: {type: string, format: date}
+        stations:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: {type: string, pattern: '^[1-9][0-9]{0,9}:[0-9]{1,10}$'}
+        overwrite: {type: boolean, default: false}
   - code: example_echo
     name: Esempio - eco con file di output
     description: >-

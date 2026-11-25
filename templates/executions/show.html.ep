@@ -49,6 +49,24 @@
 % }
 </div>
 % }
+% if (($execution->{error_code} // '') eq 'duplicate_confirmation_required') {
+<div class="alert" role="alert">
+  Un'esecuzione corrispondente e stata completata mentre questa richiesta era in coda.
+% if ($duplicate_confirmation_source) {
+  <a href="<%= url_for 'execution', id => $duplicate_confirmation_source %>">Consulta l'esecuzione precedente</a>.
+  La conferma crea una nuova richiesta con gli stessi parametri e le stesse opzioni,
+  inclusa l'eventuale disattivazione del timeout. Non attiva la sovrascrittura.
+  <form method="post" action="<%= url_for 'execution_confirm_duplicate', id => $execution->{id} %>">
+    <%= csrf_field %>
+    <label><input type="checkbox" name="confirm_duplicate" value="1" required>
+      Confermo la riesecuzione con le opzioni precedenti</label>
+    <button type="submit">Conferma e riesegui</button>
+  </form>
+% } else {
+  Ripetere la richiesta dalla procedura o dalla funzione originale e confermare la riesecuzione.
+% }
+</div>
+% }
 % if ($can_bypass_timeout) {
 <div class="alert" role="alert">
 % if (($execution->{error_code} // '') eq 'timeout_estimate_unavailable') {

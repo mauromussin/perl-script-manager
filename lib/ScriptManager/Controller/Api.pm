@@ -14,7 +14,10 @@ sub create ($c) {
         unless ref $input eq 'HASH';
     my $proc = $c->registry->get($c->param('code')) or return $c->render(json => {error => 'Procedura non trovata'}, status => 404);
 
-    my $result = $c->execution_service->submit($proc->{code}, $input, requested_by => $c->current_user);
+    my $confirmation = $c->req->headers->header('X-Confirm-Completed-Execution');
+    my $result = $c->execution_service->submit($proc->{code}, $input, requested_by => $c->current_user,
+        defined $confirmation ? (confirm_completed_execution => $confirmation) : ());
+    return $c->render(json => {duplicate => $result->{duplicate}}, status => 409) if $result->{duplicate};
     return $c->render(json => {errors => $result->{errors}}, status => 422) if $result->{errors};
     return $c->render(json => {id => $result->{id}}, status => 201);
 }

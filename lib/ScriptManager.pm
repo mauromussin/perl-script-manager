@@ -111,9 +111,12 @@ sub _routes ($self) {
     $r->post('/procedures/<code>/run')->to('executions#create')->name('procedure_run');
     $r->post('/procedures/correla_eventi_cmp/prepare')->to('catalog#prepare_correlation')
         ->name('correlation_prepare');
+    $r->post('/procedures/calcola_laeq/prepare')->to('catalog#prepare_laeq')->name('laeq_prepare');
     $r->get('/executions')->to('executions#index')->name('executions');
     $r->get('/executions/<id>')->to('executions#show')->name('execution');
     $r->post('/executions/<id>/cancel')->to('executions#cancel')->name('execution_cancel');
+    $r->post('/executions/<id>/confirm-duplicate')
+        ->to('executions#confirm_queued_duplicate')->name('execution_confirm_duplicate');
     $r->post('/executions/<id>/retry-without-timeout')
         ->to('executions#retry_without_timeout')->name('execution_timeout_bypass');
     $r->get('/executions/<id>/correlation-results')

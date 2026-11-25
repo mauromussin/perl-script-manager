@@ -4,8 +4,6 @@ use Mojo::Base -base, -signatures;
 use ScriptManager::Exception;
 use ScriptManager::Service::CorrelazioneSetup;
 use ScriptManager::Service::EventiCMP;
-use POSIX 'strftime';
-use Time::Local 'timegm';
 
 has 'repo';
 has eventi => sub { ScriptManager::Service::EventiCMP->new };
@@ -54,10 +52,6 @@ sub results ($self, $execution, $references) {
         next unless $references->{$key} && ref $meta->{days} eq 'ARRAY';
         $counts{$key} = {map { $_->{giorno} => $_ } @{$meta->{days}}};
     }
-    my ($y, $m, $d) = split /-/, $params->{date_from};
-    my $first = timegm(0, 0, 0, $d, $m - 1, $y);
-    ($y, $m, $d) = split /-/, $params->{date_to};
-    my $last = timegm(0, 0, 0, $d, $m - 1, $y);
     for my $key (sort keys %$references) {
         my ($log, $station) = split /:/, $key;
         my %days;
@@ -73,9 +67,15 @@ sub results ($self, $execution, $references) {
                 $days{$row->{giorno}}{$type}{$row->{correlato}} = $row;
             }
         }
+        my %dates = map { $_ => 1 } keys %days;
+        if (exists $counts{$key}) {
+            for my $day (keys %{$counts{$key}}) {
+                next if $day lt $params->{date_from} || $day gt $params->{date_to};
+                $dates{$day} = 1 if ($counts{$key}{$day}{eventi} // 0) > 0;
+            }
+        }
         my @rows;
-        for (my $epoch = $first; $epoch <= $last; $epoch += 86400) {
-            my $day = strftime('%Y-%m-%d', gmtime($epoch));
+        for my $day (sort keys %dates) {
             my $row = $days{$day} // {};
             $row->{giorno} = $day;
             $row->{counts} = $counts{$key}{$day}
@@ -83,7 +83,8 @@ sub results ($self, $execution, $references) {
                 if exists $counts{$key};
             push @rows, $row;
         }
-        push @results, {log_id => $log, station_code => $station, rows => \@rows};
+        push @results, {log_id => $log, station_code => $station, rows => \@rows,
+            activatable => scalar keys %days};
     }
     $db->disconnect;
     return \@results;

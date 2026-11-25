@@ -11,7 +11,7 @@ sub usage {
     return <<'USAGE';
 Uso:
   procedure list
-  procedure run <codice> [--parametro valore ...] [--wait]
+  procedure run <codice> [--parametro valore ...] [--confirm-completed-execution UUID] [--wait]
   procedure status <id-esecuzione>
   procedure cancel <id-esecuzione>
   procedure reconcile
@@ -41,10 +41,29 @@ if ($command eq 'run') {
     my $code = shift @args // die usage();
     my $wait = grep { $_ eq '--wait' } @args;
     @args = grep { $_ ne '--wait' } @args;
+    my ($confirmed, @procedure_args);
+    while (@args) {
+        my $arg = shift @args;
+        if ($arg eq '--confirm-completed-execution' || $arg =~ /\A--confirm-completed-execution=(.*)\z/) {
+            die "Conferma duplicata\n" if defined $confirmed;
+            $confirmed = $arg eq '--confirm-completed-execution' ? shift @args : $1;
+            die "Identificatore per la conferma mancante\n" unless defined $confirmed && length $confirmed;
+        } else {
+            push @procedure_args, $arg;
+        }
+    }
 
     my $proc = $app->registry->get($code) // do { warn "Procedura non disponibile: $code\n"; exit 2 };
-    my $input = eval { $app->registry->validator($proc)->from_args(\@args) } // do { warn $@; exit 2 };
-    my $result = $service->submit($code, $input, requested_by => $user);
+    my $input = eval { $app->registry->validator($proc)->from_args(\@procedure_args) } // do { warn $@; exit 2 };
+    my $result = $service->submit($code, $input, requested_by => $user,
+        defined $confirmed ? (confirm_completed_execution => $confirmed) : ());
+    if ($result->{duplicate}) {
+        my $id = $result->{duplicate}{id};
+        warn "Esecuzione " . ($result->{duplicate}{uncertain} ? 'potenzialmente ' : '')
+            . "identica gia completata: $id. Per rieseguire con le opzioni scelte usare "
+            . "--confirm-completed-execution $id\n";
+        exit 2;
+    }
     if ($result->{errors}) {
         warn "$_->{path}: $_->{message}\n" for @{$result->{errors}};
         exit 2;

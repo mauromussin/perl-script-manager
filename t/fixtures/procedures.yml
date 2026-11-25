@@ -190,6 +190,26 @@ procedures:
           uniqueItems: true
           items: {type: string, pattern: '^[1-9][0-9]*:[0-9]+(:(lva|lvan))?$'}
         confirm_activation: {type: boolean, enum: [true]}
+  - code: calcola_laeq
+    name: 16 test LAeq
+    handler_class: ScriptManager::Command::CalcolaLAeq
+    execution_mode: async
+    timeout_seconds: 3600
+    queue_by_database: true
+    parameter_schema:
+      type: object
+      required: [database, airport, date_from, date_to, stations]
+      properties:
+        database: {type: string, pattern: '^[A-Za-z0-9_]{1,64}$'}
+        airport: {type: string, enum: [LIMC, LIML, LIME, LIPO]}
+        date_from: {type: string, format: date}
+        date_to: {type: string, format: date}
+        stations:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: {type: string, pattern: '^[1-9][0-9]{0,9}:[0-9]{1,10}$'}
+        overwrite: {type: boolean, default: false}
   - code: elimina_correlazione_cmp
     name: 14 test eliminazione
     ui_hidden: true

@@ -86,8 +86,9 @@ sub load ($self, $airport = undef, $year = undef) {
             if ($execution && ($execution->{status} eq 'failed' || $execution->{status} eq 'timed_out')) {
                 ($tone, $label) = ('failure', 'Ultima correlazione fallita o in timeout per questo intervallo');
             }
+            my $has_data = exists $value->{0} || exists $value->{1};
             $station->{cells}{$day} = {tone => $tone, label => $label,
-                can_delete => exists $value->{0} || exists $value->{1},
+                has_data => $has_data, can_delete => $has_data,
                 execution_id => $tone eq 'failure' ? $execution->{id} : undef};
         }
     }

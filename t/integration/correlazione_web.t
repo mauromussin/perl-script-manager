@@ -123,6 +123,10 @@ is $setup->preview('LIME', 'bgy_2026_bruma')->{stations}[0]{defaults}{shift}, 1,
 eval { $setup->prepare('LIME', 'bgy_2026_bruma', \@missing) };
 ok(ScriptManager::Exception->caught($@, 'database_busy'), 'creazione rifiutata anche con esecuzione in coda');
 is $app->execution_service->execute($id), 'completed', 'correlazione effettiva completata';
+$t->post_ok('/procedures/correla_eventi_cmp/run' => form => \%form)->status_is(409)
+    ->element_exists('input[name=selected_station][value="1:204"]')
+    ->element_exists('input[name=shift_1][value="2"]')
+    ->element_exists('input[name=confirm_replacement][value="1"]');
 is $setup->preview('LIME', 'bgy_2026_bruma')->{stations}[0]{defaults}{shift}, 2,
     'la richiesta completata aggiorna il default della stazione';
 
@@ -140,7 +144,7 @@ $db->do(q{INSERT INTO bgy_2026_bruma.st_lva
            ('2024-05-21',204,'2024-05-21',0,50,14,1,'0')});
 $t->get_ok("/executions/$id/correlation-results")->status_is(200)
     ->content_like(qr/2024-05-20/)->content_like(qr/1\/1 \(100\.00%\)/)
-    ->content_like(qr/0\/0 \(non calcolabile\)/)
+    ->element_exists_not('tr[data-day="2024-05-21"]')
     ->element_exists("input[name=activations][value=\"$log_id:204\"]")
     ->element_count_is('input[name=activations]', 1);
 is $t->tx->res->dom->at('tr[data-day="2024-05-20"]')->find('td')->[3]->all_text,
@@ -148,9 +152,6 @@ is $t->tx->res->dom->at('tr[data-day="2024-05-20"]')->find('td')->[3]->all_text,
 is_deeply [map { $_->all_text } $t->tx->res->dom->at('tr[data-day="2024-05-20"]')->find('td')->each],
     ['2024-05-20', '30.63', '30.63', '0.00', '1/1 (100.00%)', '35.99', '35.99', '0', '1'],
     'LVA, LVAn, differenza e percentuale a due decimali, conteggi notturni interi nella stessa riga';
-is_deeply [map { $_->all_text } $t->tx->res->dom->at('tr[data-day="2024-05-21"]')->find('td')->each],
-    ['2024-05-21', '—', '—', '—', '0/0 (non calcolabile)', '—', '—', '0', '0'],
-    'giorno senza eventi: conteggi notturni zero e valori mancanti';
 my $old = $app->repo->create_execution(procedure_code => 'correla_eventi_cmp',
     requested_by => 'test', queue_target => $execution->{queue_target}, parameters => $execution->{parameters});
 $app->pg->db->query("update executions set status='completed' where id=?", $old);
@@ -168,6 +169,44 @@ $t->get_ok("/executions/$old_daily/correlation-results")->status_is(200);
 my @old_cells = map { $_->all_text } $t->tx->res->dom->at('tr[data-day="2024-05-20"]')->find('td')->each;
 is_deeply [@old_cells[7,8]],
     ['Non disponibile', 'Non disponibile'], 'vecchi conteggi senza snapshot notturno non ricostruiti dai dati correnti';
+$db->do(q{INSERT INTO bgy_2026_bruma.st_lva
+    (data_calc,id_stazione,data_lva,correlato,valore,id_log)
+    VALUES ('2024-05-20',204,'2024-05-20',0,50,500)});
+$db->do(q{INSERT INTO bgy_2026_bruma.st_lvan
+    (data_calc,id_stazione,data_lvan,correlato,valore,id_log)
+    VALUES ('2024-05-22',204,'2024-05-22',0,40,500)});
+my $partial = $app->repo->create_execution(procedure_code => 'correla_eventi_cmp',
+    requested_by => 'test', queue_target => $execution->{queue_target}, parameters => $execution->{parameters});
+$app->pg->db->query("update executions set status='completed' where id=?", $partial);
+$app->repo->add_event($partial, info => 'completata',
+    metadata => {operation => 'correlation_station_complete', station_code => 204, log_id => 500});
+$app->repo->add_event($partial, info => 'conteggi', metadata => {
+    operation => 'correlation_daily_counts', station_code => 204, log_id => 500,
+    days => [{giorno => '2024-05-23', eventi => 2, correlati => 0},
+             {giorno => '2024-05-25', eventi => 0, correlati => 0},
+             {giorno => '2024-05-27', eventi => 1, correlati => 0}],
+});
+$t->get_ok("/executions/$partial/correlation-results")->status_is(200);
+is_deeply [map { $_->attr('data-day') } $t->tx->res->dom->find('tr[data-day]')->each],
+    [qw(2024-05-20 2024-05-22 2024-05-23)],
+    'solo giorni con LVA, solo LVAn o eventi, ordinati e nel periodo';
+my $empty = $app->repo->create_execution(procedure_code => 'correla_eventi_cmp',
+    requested_by => 'test', queue_target => $execution->{queue_target}, parameters => $execution->{parameters});
+$app->pg->db->query("update executions set status='completed' where id=?", $empty);
+$app->repo->add_event($empty, info => 'completata',
+    metadata => {operation => 'correlation_station_complete', station_code => 204, log_id => 501});
+$t->get_ok("/executions/$empty/correlation-results")->status_is(200)
+    ->content_like(qr/Nessun dato nel periodo/)->element_exists_not('tr[data-day]')
+    ->element_exists_not('input[name=activations]');
+$app->repo->add_event($empty, info => 'conteggi', metadata => {
+    operation => 'correlation_daily_counts', station_code => 204, log_id => 501,
+    days => [{giorno => '2024-05-23', eventi => 2, correlati => 0}],
+});
+$t->get_ok("/executions/$empty/correlation-results")->status_is(200)
+    ->element_exists('tr[data-day="2024-05-23"]')
+    ->content_like(qr/Nessun valore LVA\/LVAn da attualizzare/)
+    ->element_exists_not('input[name=activations]')
+    ->element_exists_not('input[name=confirm_activation]');
 {
     local $ENV{MYSQL_HOST} = 'another-server';
     my $review = ScriptManager::Service::CorrelazioneReview->new(repo => $app->repo);
@@ -261,6 +300,11 @@ subtest 'cruscotto correlazioni per aeroporto, anno e giorni con LVA attuale' =>
         parameters => {airport => 'LIME', database => 'bgy_2026_bruma',
             date_from => '2026-02-28', date_to => '2026-02-28', stations => ['3:206:1:-90:100:5000']});
     $app->pg->db->query("update executions set status='timed_out' where id=?", $timed_out);
+    my $failed_without_data = $app->repo->create_execution(procedure_code => 'correla_eventi_cmp',
+        requested_by => 'test', queue_target => $target,
+        parameters => {airport => 'LIME', database => 'bgy_2026_bruma',
+            date_from => '2026-01-02', date_to => '2026-01-02', stations => ['3:206:1:-90:100:5000']});
+    $app->pg->db->query("update executions set status='failed' where id=?", $failed_without_data);
 
     $t->get_ok('/')->element_exists('nav a[href="/cruscotto-correlazioni"]');
     $t->get_ok('/cruscotto-correlazioni')->status_is(200)->element_exists('select[name=airport]');
@@ -271,7 +315,10 @@ subtest 'cruscotto correlazioni per aeroporto, anno e giorni con LVA attuale' =>
         ->element_exists('tr[data-station="1"] td[data-day="2026-01-01"] a[href^="/cruscotto-correlazioni/elimina"]')
         ->element_exists("tr[data-station=\"1\"] td[data-day=\"2026-01-02\"] a.heat-failure[href=\"/executions/$failed_id\"]")
         ->element_exists('tr[data-station="1"] td[data-day="2026-01-03"] .heat-empty')
-        ->element_exists('tr[data-station="1"] td[data-day="2026-01-04"] .heat-empty')
+        ->element_exists('tr[data-station="1"] td[data-day="2026-01-04"]')
+        ->element_exists_not('tr[data-station="1"] td[data-day="2026-01-04"] .correlation-cell')
+        ->element_exists_not('tr[data-station="1"] td[data-day="2026-01-04"] .correlation-delete')
+        ->element_exists("tr[data-station=\"3\"] td[data-day=\"2026-01-02\"] a.heat-failure[href=\"/executions/$failed_without_data\"]")
         ->element_exists('tr[data-station="3"] td[data-day="2026-01-04"] .heat-timeout')
         ->element_exists("tr[data-station=\"3\"] td[data-day=\"2026-02-28\"] a.heat-failure[href=\"/executions/$timed_out\"]")
         ->element_exists_not('td[data-day="2026-01-05"]')

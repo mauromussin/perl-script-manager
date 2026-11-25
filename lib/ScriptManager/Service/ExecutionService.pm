@@ -13,6 +13,19 @@ has debug_operations => 0;
 has next_reconciliation => 0;
 has logger         => sub { Log::Any->get_logger(category => 'ScriptManager::Execution') };
 
+sub _duplicate ($self, $proc, $params, $target, $id = undef) {
+    my $validator = $self->registry->validator($proc);
+    my $properties = $proc->{parameter_schema}{properties} // {};
+    my @excluded = (qw(overwrite confirm_parameters confirm_replacement confirm_activation confirm_deletion),
+        grep { $properties->{$_}{'x-sensitive'} } keys %$properties);
+    my %identity = %{$validator->redact($params)};
+    delete @identity{@excluded};
+    my $execution = $self->repo->completed_duplicate($proc->{code}, $target, \%identity, \@excluded, $id);
+    return undef unless $execution;
+    return {id => $execution->{id}, finished_at => $execution->{finished_at},
+        uncertain => $validator->has_sensitive ? 1 : 0};
+}
+
 # Validates the input and creates an execution. Returns {id => ...} or {errors => [...]}.
 sub submit ($self, $code, $input, %o) {
     my $proc = $self->registry->get($code)
@@ -46,6 +59,15 @@ sub submit ($self, $code, $input, %o) {
             if $source && $code eq 'carica_db'
             && (!defined $source->{queue_target} || $source->{queue_target} ne $target);
     }
+    my $confirmed = $o{confirm_completed_execution};
+    my $duplicate = $self->_duplicate($proc, $params, $target);
+    if (defined $confirmed) {
+        my $match = $self->_duplicate($proc, $params, $target, $confirmed);
+        return {errors => [{path => '', message => 'Conferma non valida o non piu corrispondente ai parametri'}]}
+            unless $match;
+    } elsif ($duplicate) {
+        return {duplicate => $duplicate};
+    }
     my $id = $self->repo->create_execution(
         procedure_code => $code,
         requested_by   => $o{requested_by} // 'anonymous',
@@ -54,6 +76,10 @@ sub submit ($self, $code, $input, %o) {
         timeout_bypassed => ($source || $initial_bypass) ? 1 : 0,
     );
     $self->repo->add_event($id, 'info', 'Esecuzione registrata', event_type => 'state');
+    $self->repo->add_event($id, 'warning',
+        'Riesecuzione autorizzata dopo verifica di una precedente esecuzione completata; opzioni invariate',
+        event_type => 'state', metadata => {operation => 'duplicate_confirmed', source_execution_id => $confirmed})
+        if defined $confirmed;
     $self->repo->add_event($id, 'warning',
         ($code eq 'carica_db' ? 'Conferma utente: timeout reale disattivato per questa esecuzione; '
             : 'Conferma utente: controllo della stima e timeout reale disattivati per questa esecuzione; ')
@@ -149,6 +175,15 @@ sub execute ($self, $id, $params = undef) {
                 die ScriptManager::Exception->new(code => 'timed_out', message => "Timeout di $timeout secondi superato");
             };
             alarm($bypassed ? 0 : $timeout);
+            unless ($self->repo->has_duplicate_confirmation($id)) {
+                my $duplicate = $self->_duplicate($proc, $params // $exec->{parameters}, $exec->{queue_target});
+                if ($duplicate) {
+                    $ctx->log(warning => 'Una precedente esecuzione corrispondente e stata completata dopo la richiesta',
+                        operation => 'duplicate_detected', source_execution_id => $duplicate->{id});
+                    ScriptManager::Exception->throw('duplicate_confirmation_required',
+                        'Esecuzione corrispondente gia completata: inviare nuovamente la richiesta e confermare la riesecuzione');
+                }
+            }
             $ctx->log(info => "Preparazione comando $proc->{handler_class}; "
                 . ($bypassed ? 'timeout disattivato con conferma utente' : "timeout $timeout secondi"));
             my $handler = $proc->{handler_class}->new(logger => $self->logger, process_runner => $self->process_runner);

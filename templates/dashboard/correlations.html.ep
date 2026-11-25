@@ -31,14 +31,15 @@
 % }
 % if (defined $database) {
 <p>Database <%= $database %>: solo risultati LVA attuali. Sono mostrate le date con almeno un dato attuale
-  tra le stazioni dell'aeroporto; bianco indica dato assente o LVAnc mancante.</p>
+  tra le stazioni dell'aeroporto. Per le stazioni senza dati il rettangolo non viene mostrato,
+  salvo errori; bianco indica LVAnc mancante.</p>
 <p>Il rosso segnala un'ultima correlazione terminata con errore o timeout il cui intervallo
   comprende il giorno; non individua necessariamente il giorno in cui si e verificato l'errore.
   Selezionare la cella rossa per consultare i log. Il simbolo × sotto una cella
   apre la verifica per eliminare la correlazione della stazione e del giorno.</p>
 <ul class="heat-legend" aria-label="Legenda">
   <li><span class="heat-key heat-success"></span> LVAc e LVAnc presenti</li>
-  <li><span class="heat-key heat-empty"></span> Dato assente o LVAnc mancante</li>
+  <li><span class="heat-key heat-empty"></span> LVAnc mancante</li>
   <li><span class="heat-key heat-failure"></span> Correlazione fallita o timeout</li>
   <li><span class="heat-key heat-timeout"></span> Solo LVAnc</li>
 </ul>
@@ -64,7 +65,7 @@
       <td data-day="<%= $day %>">
 %       if ($cell->{execution_id}) {
         <a class="correlation-cell heat-<%= $cell->{tone} %>" href="<%= url_for 'execution', id => $cell->{execution_id} %>" title="<%= "$day: $cell->{label}" %>" aria-label="<%= "$day: $cell->{label}" %>"></a>
-%       } else {
+%       } elsif ($cell->{has_data}) {
         <span role="img" tabindex="0" class="correlation-cell heat-<%= $cell->{tone} %>" title="<%= "$day: $cell->{label}" %>" aria-label="<%= "$day: $cell->{label}" %>"></span>
 %       }
 %       if ($cell->{can_delete}) {

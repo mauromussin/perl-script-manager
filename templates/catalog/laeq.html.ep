@@ -1,0 +1,85 @@
+% layout 'default';
+% title $procedure->{name};
+<h1><%= $procedure->{name} %></h1>
+<p><%= $procedure->{description} %></p>
+% if (@$errors) {
+<div class="alert" role="alert"><strong>Impossibile procedere:</strong><ul>
+% for my $error (@$errors) {
+  <li><%= $error->{path} %> <%= $error->{message} %></li>
+% }
+</ul></div>
+% }
+<form method="get" action="<%= url_for 'procedure', code => $procedure->{code} %>" class="filters">
+  <label for="laeq-airport">1. Aeroporto</label>
+  <select id="laeq-airport" name="airport" required>
+    <option value="">Seleziona aeroporto</option>
+% for my $airport (qw(LIMC LIML LIME LIPO)) {
+    <option value="<%= $airport %>"<%= ($values->{airport} // '') eq $airport ? ' selected' : '' %>><%= $airport %></option>
+% }
+  </select>
+  <button type="submit">Cerca database</button>
+</form>
+% if ($databases) {
+<form method="get" action="<%= url_for 'procedure', code => $procedure->{code} %>" class="filters">
+  <input type="hidden" name="airport" value="<%= $values->{airport} %>">
+  <label for="laeq-database">2. Database</label>
+  <select id="laeq-database" name="database" required>
+    <option value="">Seleziona database</option>
+% for my $database (@$databases) {
+    <option value="<%= $database %>"<%= ($values->{database} // '') eq $database ? ' selected' : '' %>><%= $database %></option>
+% }
+  </select>
+  <button type="submit">Verifica stazioni e tabella</button>
+</form>
+% if (!@$databases) {
+<p>Nessun database associato disponibile.</p>
+% }
+% }
+% if ($preview) {
+% if (@{$preview->{schema}{errors}}) {
+<div class="alert" role="alert"><strong>Schema incompatibile:</strong><ul>
+% for my $error (@{$preview->{schema}{errors}}) {
+  <li><%= $error %></li>
+% }
+</ul></div>
+% } elsif ($preview->{schema}{missing}) {
+<div class="alert" role="alert">
+  La tabella st_laeq manca in <%= $values->{database} %>. Sara creata vuota con la struttura
+  di mxp_2024_bruma.st_laeq; l'operazione modifica lo schema e richiede la coda libera.
+  <form method="post" action="<%= url_for 'laeq_prepare' %>">
+    <%= csrf_field %>
+    <input type="hidden" name="airport" value="<%= $values->{airport} %>">
+    <input type="hidden" name="database" value="<%= $values->{database} %>">
+    <label><input type="checkbox" name="confirm_schema" value="1" required> Confermo la creazione della tabella</label>
+    <button type="submit">Crea tabella</button>
+  </form>
+</div>
+% } elsif (!@{$preview->{stations}}) {
+<p>Nessuna stazione associata all'aeroporto.</p>
+% } else {
+% my %selected = map { $_ => 1 } @{ref $values->{stations} eq 'ARRAY' ? $values->{stations} : []};
+<p>3. Seleziona le stazioni e il periodo, entrambi nello stesso anno del database.
+  La notte 22-06 e attribuita al giorno delle 22; il 31 dicembre richiede il database dell'anno successivo.</p>
+<p>Si usano solo gli eventi abbinati dalla 14. Senza eventi correlati non viene scritto alcun valore.
+  Le durate sono fisse (16 e 8 ore) anche nei cambi ora.</p>
+<form method="post" action="<%= url_for 'procedure_run', code => $procedure->{code} %>">
+  <%= csrf_field %>
+  <input type="hidden" name="airport" value="<%= $values->{airport} %>">
+  <input type="hidden" name="database" value="<%= $values->{database} %>">
+  <label>Dal giorno <input type="date" name="date_from" required value="<%= $values->{date_from} // '' %>"></label>
+  <label>Al giorno <input type="date" name="date_to" required value="<%= $values->{date_to} // '' %>"></label>
+  <fieldset><legend>Stazioni</legend>
+% for my $station (@{$preview->{stations}}) {
+%   my $code = $station->{c_cab} // '';
+%   my $key = $station->{row_id} . ':' . $code;
+    <label><input type="checkbox" name="stations" value="<%= $key %>"<%= $selected{$key} ? ' checked' : '' %><%= $code =~ /^\d+$/ ? '' : ' disabled' %>> <%= $station->{nome} %> (<%= $code %>)</label>
+% }
+  </fieldset>
+  <p>La sovrascrittura sostituisce solo i valori calcolati e rimuove eventuali duplicati.
+    Senza eventi correlati non cancella valori precedenti. MyISAM e AutoCommit non garantiscono
+    rollback: errori o interruzioni possono lasciare dati parziali.</p>
+  <label><input type="checkbox" name="overwrite" value="1"<%= $values->{overwrite} ? ' checked' : '' %>> Confermo la sovrascrittura dei risultati esistenti</label>
+  <button type="submit">Calcola LAeq</button>
+</form>
+% }
+% }
