@@ -93,6 +93,9 @@ Le stazioni sono individuate in `anagrafica.stazioni` e gli eventi tramite
 un evento con SEL valorizzato per ogni stazione. Il comando usa le battute
 validate e la distanza tridimensionale, registra i parametri nello storico
 PostgreSQL JSONB e scrive anche `anagrafica.correla_log`.
+La ricerca delle battute si basa sull'ora della singola battuta
+(`battute.time_italy`, nella finestra dell'evento) e su `flay.validation_bt = 3`;
+`flay.data_ora_arr` non viene usata, come nella query di correlazione legacy.
 Calcola LVA e LVAn per giorno, distinguendo eventi correlati e totale degli
 eventi: quest'ultimo corrisponde al valore chiamato non correlato dal legacy.
 Il totale viene salvato anche per giorni senza correlazioni. Dopo il

@@ -758,7 +758,16 @@ procedure eseguibili dell'applicazione.
   La versione di riferimento legge la password anche dagli argomenti CLI.
 - Tabelle: `st_eventi_cmp`, `battute`, `flay`, `battute_eventi_cmp`, `st_lva`,
   `st_lvan`, `anagrafica.stazioni`, `aeroporti`, `stazioni_sid` e `correla_log`.
-  Il legacy svuota e ricarica `battute_tmp`, ma la ricerca usa `battute`.
+  Il legacy svuota e ricarica `battute_tmp` (righe 185-195, selezionando le
+  tracce con `flay.data_ora_arr` nella finestra del periodo piu limiti
+  temporali), ma la ricerca (`$sel_BAT`, righe 285-296) usa `battute` e
+  filtra sull'ora della singola battuta `bt.time_italy` tra l'evento
+  spostato di rew e adv secondi. `flay.data_ora_arr` e solo restituita come
+  colonna, non entra nella selezione. La versione integrata si comporta
+  allo stesso modo: ricerca su `battute.time_italy`, con `flay.validation_bt = 3`,
+  `bt.validation` del tipo cercato e SID associato alla stazione; non legge
+  `flay.data_ora_arr`. Un valore incoerente di `data_ora_arr` non altera quindi
+  la correlazione; serve invece la procedura 10 (`validation_bt = 3`).
 - La procedura integrata non usa `battute_tmp` ne SQL libero; richiede
   conferma della sostituzione delle correlazioni, per tutti gli shift,
   e parametri per stazione. L'ultimo set di una richiesta completata diventa
