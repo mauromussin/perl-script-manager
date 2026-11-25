@@ -71,6 +71,7 @@ sub submit ($self, $code, $input, %o) {
     my $id = $self->repo->create_execution(
         procedure_code => $code,
         requested_by   => $o{requested_by} // 'anonymous',
+        requested_ip   => $o{requested_ip},
         parameters     => $validator->redact($params),
         queue_target   => $target,
         timeout_bypassed => ($source || $initial_bypass) ? 1 : 0,

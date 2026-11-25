@@ -21,7 +21,7 @@
 % }
     <%= $execution->{current_step} // '' %>
   </dd>
-  <dt>Richiesta</dt><dd><%= $execution->{requested_at} %> da <%= $execution->{requested_by} %></dd>
+  <dt>Richiesta</dt><dd><%= $execution->{requested_at} %> da <%= $execution->{requested_by} %><%= defined $execution->{requested_ip} ? ' (' . $execution->{requested_ip} . ')' : '' %></dd>
   <dt>Inizio</dt><dd><%= $execution->{started_at} // '-' %></dd>
   <dt>Fine</dt><dd><%= $execution->{finished_at} // '-' %></dd>
 % if (defined $execution->{summary}) {

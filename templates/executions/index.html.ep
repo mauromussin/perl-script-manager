@@ -17,13 +17,13 @@
   </select>
   <input type="date" name="from" value="<%= $filters->{from} // '' %>" title="Dal">
   <input type="date" name="to" value="<%= $filters->{to} // '' %>" title="Al">
-  <input type="text" name="user" value="<%= $filters->{user} // '' %>" placeholder="Utente">
+  <input type="text" name="ip" value="<%= $filters->{ip} // '' %>" placeholder="Indirizzo IP">
   <input type="text" name="id" value="<%= $filters->{id} // '' %>" placeholder="Identificatore">
   <button type="submit">Filtra</button>
 </form>
 
 <table>
-  <thead><tr><th>Richiesta</th><th>Procedura</th><th>Stato</th><th>Utente</th><th>Esecuzione</th></tr></thead>
+  <thead><tr><th>Richiesta</th><th>Procedura</th><th>Stato</th><th>Utente</th><th>IP</th><th>Esecuzione</th></tr></thead>
   <tbody>
 % for my $e (@$executions) {
     <tr>
@@ -31,11 +31,12 @@
       <td><%= $e->{procedure_name} %></td>
       <td><span class="status <%= $e->{status} %>"><%= $e->{status} %></span></td>
       <td><%= $e->{requested_by} %></td>
+      <td><%= $e->{requested_ip} // '-' %></td>
       <td><a href="<%= url_for 'execution', id => $e->{id} %>"><%= substr $e->{id}, 0, 8 %></a></td>
     </tr>
 % }
 % if (!@$executions) {
-    <tr><td colspan="5">Nessuna esecuzione trovata.</td></tr>
+    <tr><td colspan="6">Nessuna esecuzione trovata.</td></tr>
 % }
   </tbody>
 </table>

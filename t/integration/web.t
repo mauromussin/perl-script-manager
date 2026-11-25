@@ -52,6 +52,12 @@ subtest 'start and follow an execution' => sub {
     $t->get_ok('/executions')->status_is(200)->content_like(qr/Somma di prova/);
     $t->get_ok('/executions?status=failed')->status_is(200)
         ->text_is('tbody tr td', 'Nessuna esecuzione trovata.');
+    my $ip = $t->app->repo->get_execution(substr($location, -36))->{requested_ip};
+    like $ip, qr/\A127\.0\.0\.1\z|\A::1\z/, 'IP del client registrato';
+    $t->get_ok("/executions?ip=$ip")->status_is(200)->content_like(qr/Somma di prova/);
+    $t->get_ok('/executions?ip=203.0.113.9')->status_is(200)
+        ->text_is('tbody tr td', 'Nessuna esecuzione trovata.');
+    $t->get_ok('/executions')->element_exists_not('input[name=user]');
 };
 
 subtest 'execution page shows only the latest 25 events in reverse chronological order' => sub {

@@ -91,6 +91,7 @@ sub startup ($self) {
     $self->helper(build_info        => sub ($c) { $build_info });
     # Authentication is not defined yet (see docs, section 20).
     $self->helper(current_user => sub ($c) { 'anonymous' });
+    $self->helper(client_ip    => sub ($c) { $c->tx->remote_address });
     $self->helper(is_final     => sub ($c, $status) { scalar grep { $_ eq $status } qw(completed failed cancelled timed_out) });
 
     $self->hook(before_dispatch => sub ($c) {

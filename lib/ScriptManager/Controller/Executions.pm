@@ -29,7 +29,7 @@ sub create ($c) {
     my $input     = $proc->{code} eq 'correla_eventi_cmp'
         ? ScriptManager::Service::CorrelazioneSetup->new->form_input($c->req->body_params)
         : $validator->from_form($c->req->body_params);
-    my %options = (requested_by => $c->current_user, duplicate_options($c));
+    my %options = (requested_by => $c->current_user, requested_ip => $c->client_ip, duplicate_options($c));
     if ($proc->{code} eq 'carica_db') {
         my $values = $c->req->body_params->every_param('confirm_timeout_bypass');
         return $c->render(text => 'Conferma timeout non valida', status => 422)
@@ -61,10 +61,12 @@ sub create ($c) {
 
 sub index ($c) {
     my %f;
-    for my $key (qw(procedure user id)) {
+    for my $key (qw(procedure id)) {
         my $v = $c->param($key);
         $f{$key} = $v if defined $v && length $v && length $v <= 100;
     }
+    my $ip = $c->param('ip');
+    $f{ip} = $ip if defined $ip && $ip =~ /\A[0-9A-Fa-f:.]{1,45}\z/;
     my $status = $c->param('status') // '';
     $f{status} = $status if grep { $_ eq $status } @STATUSES;
     for my $key (qw(from to)) {
@@ -133,7 +135,7 @@ sub confirm_queued_duplicate ($c) {
     my ($duplicate) = grep { ($_->{metadata}{operation} // '') eq 'duplicate_detected' } @$events;
     return $c->render(text => 'Riferimento alla precedente esecuzione non disponibile', status => 409)
         unless $duplicate && $duplicate->{metadata}{source_execution_id};
-    my %options = (requested_by => $c->current_user,
+    my %options = (requested_by => $c->current_user, requested_ip => $c->client_ip,
         confirm_completed_execution => $duplicate->{metadata}{source_execution_id});
     if ($exec->{timeout_bypassed}) {
         my ($bypass) = grep { ($_->{metadata}{operation} // '') eq 'timeout_bypass' } @$events;
@@ -191,7 +193,7 @@ sub correlation_activate ($c) {
         source_execution_id => $execution->{id},
         activations => $c->req->body_params->every_param('activations'),
         confirm_activation => Mojo::JSON::true,
-    }, requested_by => $c->current_user, duplicate_options($c));
+    }, requested_by => $c->current_user, requested_ip => $c->client_ip, duplicate_options($c));
     return render_duplicate($c, $c->registry->get('attualizza_correlazione_cmp'), $result->{duplicate})
         if $result->{duplicate};
     return $c->render(json => {errors => $result->{errors}}, status => 422) if $result->{errors};
@@ -207,7 +209,7 @@ sub retry_without_timeout ($c) {
     return $c->render(text => 'Confermare esplicitamente la disattivazione del timeout', status => 422)
         unless ($c->param('confirm_timeout_bypass') // '') eq '1';
     my $result = $c->execution_service->submit($exec->{procedure_code}, {},
-        requested_by => $c->current_user, timeout_bypass_from => $exec->{id}, duplicate_options($c));
+        requested_by => $c->current_user, requested_ip => $c->client_ip, timeout_bypass_from => $exec->{id}, duplicate_options($c));
     return render_duplicate($c, $c->registry->get($exec->{procedure_code}), $result->{duplicate})
         if $result->{duplicate};
     return $c->render(json => {errors => $result->{errors}}, status => 422) if $result->{errors};

@@ -15,7 +15,7 @@ sub create ($c) {
     my $proc = $c->registry->get($c->param('code')) or return $c->render(json => {error => 'Procedura non trovata'}, status => 404);
 
     my $confirmation = $c->req->headers->header('X-Confirm-Completed-Execution');
-    my $result = $c->execution_service->submit($proc->{code}, $input, requested_by => $c->current_user,
+    my $result = $c->execution_service->submit($proc->{code}, $input, requested_by => $c->current_user, requested_ip => $c->client_ip,
         defined $confirmation ? (confirm_completed_execution => $confirmation) : ());
     return $c->render(json => {duplicate => $result->{duplicate}}, status => 409) if $result->{duplicate};
     return $c->render(json => {errors => $result->{errors}}, status => 422) if $result->{errors};
@@ -25,7 +25,7 @@ sub create ($c) {
 sub status ($c) {
     my $exec = $c->repo->get_execution($c->param('id')) or return $c->render(json => {error => 'Esecuzione non trovata'}, status => 404);
     my %out = map { $_ => $exec->{$_} } qw(
-        id procedure_code status parameters progress current_step requested_by requested_at
+        id procedure_code status parameters progress current_step requested_by requested_ip requested_at
         started_at finished_at exit_code summary error_code error_message
         queue_target queue_position
     );

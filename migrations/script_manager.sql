@@ -127,3 +127,11 @@ alter table executions add column timeout_bypassed boolean not null default fals
 
 -- 6 down
 alter table executions drop column timeout_bypassed;
+
+-- 7 up
+alter table executions add column requested_ip text;
+create index executions_requested_ip_idx on executions(requested_ip);
+
+-- 7 down
+drop index if exists executions_requested_ip_idx;
+alter table executions drop column requested_ip;

@@ -153,9 +153,9 @@ sub create_execution ($self, %args) {
     $db->query('select pg_advisory_xact_lock(hashtextextended(?, 0))', "queue-submit:$args{queue_target}")
         if defined $args{queue_target};
     my $id = $db->query(
-        <<'SQL', $args{requested_by}, {json => $args{parameters} // {}}, $args{queue_target}, $args{timeout_bypassed} ? 1 : 0, $args{procedure_code}
-insert into executions (procedure_id, requested_by, parameters, queue_target, timeout_bypassed)
-select id, ?::text, ?::jsonb, ?::text, ?::boolean from procedures where code = ?
+        <<'SQL', $args{requested_by}, $args{requested_ip}, {json => $args{parameters} // {}}, $args{queue_target}, $args{timeout_bypassed} ? 1 : 0, $args{procedure_code}
+insert into executions (procedure_id, requested_by, requested_ip, parameters, queue_target, timeout_bypassed)
+select id, ?::text, ?::text, ?::jsonb, ?::text, ?::boolean from procedures where code = ?
 returning id
 SQL
     )->hash->{id};
@@ -329,7 +329,7 @@ sub list_executions ($self, %f) {
     for my $pair (
         [procedure => 'p.code = ?'],
         [status    => 'e.status = ?'],
-        [user      => 'e.requested_by = ?'],
+        [ip        => 'e.requested_ip = ?'],
         [from      => 'e.requested_at >= ?::timestamptz'],
         [to        => 'e.requested_at < (?::date + 1)'],
         )
