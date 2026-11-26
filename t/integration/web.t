@@ -172,7 +172,15 @@ subtest '04: conferma esplicita e CSRF prima della riesecuzione senza timeout' =
     $t->post_ok("/executions/$retry/retry-without-timeout" => form =>
         {csrf_token => csrf(), confirm_timeout_bypass => 1})->status_is(409, 'nessun bypass per job queued o gia confermati');
     $repo->mark_finished($source, status => 'failed', error_code => 'timeout_estimate_unavailable');
-    $t->get_ok("/executions/$source")->status_is(200)->element_exists_not('input[name=confirm_timeout_bypass]');
+    $t->get_ok("/executions/$source")->status_is(200)
+        ->element_exists('input[name=confirm_timeout_bypass][required]')
+        ->content_like(qr/Durata non stimabile/);
+    $token = csrf();
+    $t->get_ok("/api/executions/$source")->status_is(200)
+        ->json_is('/timeout_bypass_available' => Mojo::JSON::true);
+    $t->post_ok($endpoint => form => {csrf_token => $token, confirm_timeout_bypass => 1})->status_is(302);
+    my ($uncalibrated) = $t->tx->res->headers->location =~ m{/executions/([0-9a-f-]+)};
+    ok $repo->get_execution($uncalibrated)->{timeout_bypassed}, 'override senza storico confermato dal web';
 };
 
 subtest '08: conferma per stima eccessiva o assente, con stessa coda e parametri' => sub {

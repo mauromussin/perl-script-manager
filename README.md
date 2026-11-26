@@ -442,12 +442,11 @@ L'API di stato espone `timeout_bypassed` e `timeout_bypass_available`.
 Un normale **Riesegui** non eredita il bypass; nessuna modifica al timeout
 del catalogo o alle altre procedure.
 
-Se manca uno storico misurabile, fallisce con
-`timeout_estimate_unavailable`: **anche un nuovo database senza storico
-viene bloccato**, come richiesto, senza coefficienti inventati o bypass.
-Serve una calibrazione verificata/storico operativo disponibile; non e
-previsto un comando di calibrazione. La conferma per durata eccessiva non
-aggira l'assenza dello storico.
+Se manca uno storico misurabile, la richiesta si ferma prima delle scritture con
+`timeout_estimate_unavailable`. Anche in questo caso il dettaglio offre
+**Conferma e riesegui senza timeout**: la nuova richiesta confermata procede
+senza inventare coefficienti o stime e registra un warning di **durata sconosciuta**.
+Solo quella richiesta disattiva il timeout reale; restano coda, lock e cancellazione.
 Uno skip integrale di giorni gia completati non richiede una stima.
 
 Il preflight legge soltanto il database radar; log e misure sono salvati in

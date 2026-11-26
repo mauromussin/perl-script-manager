@@ -92,12 +92,19 @@ subtest 'campiona operazioni e dimensioni differenti, nessuna scrittura radar' =
 };
 
 subtest 'assenza storico blocca; intero intervallo gia saltato non richiede stima' => sub {
-    my $ctx = PreflightContext->new(repo => PreflightRepo->new(events => []), timeout_bypassed => 1);
+    my $ctx = PreflightContext->new(repo => PreflightRepo->new(events => []));
     my $db = PreflightDB->new;
-    my $check = ScriptManager::Service::BattutePreflight->new;
+    my $check = ScriptManager::Service::BattutePreflight->new(seconds_per_operation => 1);
     eval { $check->check($db, $ctx, PreflightWindow->new, [], '', [], sub { die 'not called' }) };
-    ok(ScriptManager::Exception->caught($@, 'timeout_estimate_unavailable'), 'conferma non inventa uno storico mancante');
+    ok(ScriptManager::Exception->caught($@, 'timeout_estimate_unavailable'), 'senza conferma lo storico mancante blocca');
+    like "$@", qr/confermare nel dettaglio/;
     is $db->reads, 0, 'non tenta di stimare o scrivere con valori inventati';
+    $ctx->timeout_bypassed(1);
+    $check->check($db, $ctx, PreflightWindow->new, [], '', [], sub { die 'not called' });
+    ok scalar(grep { $_->[0] eq 'warning' && $_->[1] =~ /durata sconosciuta/ } @{$ctx->logs}),
+        'conferma esplicita con durata sconosciuta';
+    is $db->reads, 0, 'conferma senza storico non inventa una stima';
+    is $check->check_saving($ctx, 100000), undef, 'nessun ricontrollo con coefficienti precedenti';
     $check->check($db, $ctx, PreflightWindow->new(days => []), [], '', [], sub { die 'not called' });
     is $db->reads, 0, 'skip non esegue lavoro o richiede calibrazione';
 };

@@ -430,8 +430,12 @@ subtest '04: conferma oltre stima disattiva il timeout reale solo per la nuova r
     eval { $svc->submit(test_async => {}, timeout_bypass_from => $source) };
     ok(ScriptManager::Exception->caught($@, 'timeout_bypass_not_allowed'), 'bypass non esteso ad altre procedure');
     $repository->mark_finished($source, status => 'failed', error_code => 'timeout_estimate_unavailable');
-    eval { $svc->submit(valida_battute => {}, timeout_bypass_from => $source) };
-    ok(ScriptManager::Exception->caught($@, 'timeout_bypass_not_allowed'), 'storico assente non aggirato');
+    ok $svc->can_bypass_timeout($repository->get_execution($source)), 'override disponibile senza storico';
+    $cancel_run = 0;
+    my $uncalibrated = $svc->submit(valida_battute => {}, timeout_bypass_from => $source,
+        confirm_completed_execution => $retry)->{id};
+    ok $repository->get_execution($uncalibrated)->{timeout_bypassed}, 'conferma persistita senza storico';
+    is $svc->execute($uncalibrated), 'completed', 'riesecuzione confermata supera il timeout reale';
 };
 
 subtest '08: conferma senza storico elimina timeout reale, non la cancellazione' => sub {

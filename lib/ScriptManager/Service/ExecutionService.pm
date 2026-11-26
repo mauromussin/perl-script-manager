@@ -117,7 +117,7 @@ sub can_bypass_timeout ($self, $exec) {
     return 0 unless $proc && $proc->{queue_by_database} && !$exec->{timeout_bypassed};
     my $estimate_rejected = $code ne 'carica_db' && $exec->{status} eq 'failed'
         && (($exec->{error_code} // '') eq 'timeout_estimate'
-            || ($code ne 'valida_battute' && ($exec->{error_code} // '') eq 'timeout_estimate_unavailable'));
+            || ($exec->{error_code} // '') eq 'timeout_estimate_unavailable');
     my $timed_out_retry = ($code eq 'carica_db' || $code eq 'correggi_quote')
         && $exec->{status} eq 'timed_out' && ($exec->{error_code} // '') eq 'timed_out';
     return 0 if $timed_out_retry && $code eq 'carica_db'

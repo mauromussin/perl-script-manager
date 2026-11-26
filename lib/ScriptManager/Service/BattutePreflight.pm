@@ -48,12 +48,17 @@ sub ensure_budget ($self, $ctx, $analysis, $operations) {
 }
 
 sub check ($self, $db, $ctx, $window, $tracks, $selection, $bind, $plan_track) {
+    $self->seconds_per_operation(undef);
     return unless @{$window->days};
     my $rate = __PACKAGE__->saving_rate($ctx->repo->battute_timing_events($window->target, $ctx->execution_id));
-    ScriptManager::Exception->throw('timeout_estimate_unavailable',
-        'Stima 04 non attendibile: manca uno storico misurabile di salvataggio per questo database negli ultimi 90 giorni. '
-        . 'Nessuna scrittura radar eseguita; occorre una calibrazione verificata prima di procedere.')
-        unless defined $rate;
+    unless (defined $rate) {
+        ScriptManager::Exception->throw('timeout_estimate_unavailable',
+            'Stima 04 non attendibile: manca uno storico misurabile di salvataggio per questo database negli ultimi 90 giorni. '
+            . 'Nessuna scrittura radar eseguita; confermare nel dettaglio se si vuole procedere senza timeout.')
+            unless $ctx->timeout_bypassed;
+        $ctx->log(warning => 'Stima 04 non disponibile: prosecuzione senza timeout confermata, durata sconosciuta');
+        return;
+    }
     $self->seconds_per_operation($rate);
     $ctx->progress(0, 'Preflight 04: conteggio battute e campionamento in sola lettura');
     my $counts = $db->selectall_arrayref(
