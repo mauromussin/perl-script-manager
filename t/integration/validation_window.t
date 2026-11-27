@@ -155,6 +155,38 @@ subtest '04 limita anche completamento date e riepilogo' => sub {
     is_deeply $r->{data}{report}, [['Y', 16]], 'report limitato ai giorni elaborati';
 };
 
+subtest '04 esclude N senza toccare tracce e battute, anche con sovrascrittura' => sub {
+    $admin->do(q{INSERT INTO flay
+        (row_id, flay_operation, data_ora_italy, validation_fl, validation_bt, data_ora_arr, pista, sid)
+        VALUES (900, 'N', '2026-12-15 12:00:00', 'Y', NULL, '2026-12-15 11:00:00', 'NA', 'OLD'),
+               (901, 'D', '2026-12-15 12:00:00', 'Y', NULL, NULL, NULL, NULL)});
+    for my $id (900, 901) {
+        for my $i (0 .. 7) {
+            $admin->do(q{INSERT INTO battute (flay_id, time_italy, X_m, Y_m, H_m, validation, Z_m, hmod, A_m)
+                VALUES (?, DATE_ADD('2026-12-15 12:00:00', INTERVAL ? SECOND), ?, 0, 300, ?, ?, ?, ?)},
+                undef, $id, $i, $i * 100, $id == 900 ? 'Y' : undef,
+                $id == 900 ? 42 : undef, $id == 900 ? 'M' : undef, $id == 900 ? 50 : undef);
+        }
+    }
+    my $before_track = $admin->selectrow_arrayref('SELECT * FROM flay WHERE row_id = ?', undef, 900);
+    my $before_hits = $admin->selectall_arrayref('SELECT * FROM battute WHERE flay_id = ? ORDER BY row_id', undef, 900);
+    for my $overwrite (0, 1) {
+        my $r = run_stage(4, date_from => '2026-12-15', date_to => '2026-12-15', overwrite => $overwrite);
+        is $r->{data}{tracks}, 1, 'solo la traccia D elaborata';
+        is_deeply $admin->selectrow_arrayref('SELECT * FROM flay WHERE row_id = ?', undef, 900),
+            $before_track, 'traccia N intatta';
+        is_deeply $admin->selectall_arrayref('SELECT * FROM battute WHERE flay_id = ? ORDER BY row_id', undef, 900),
+            $before_hits, 'battute e quote N intatte';
+        is track_state(901)->[1], 1, 'traccia D validata';
+        is_deeply $r->{data}{report}, [['Y', 8]], 'riepilogo senza battute N escluse';
+        ok grep({ $_->{level} eq 'warning' && $_->{message} =~ /1 tracce con operazione N escluse/ }
+            @{$repo->list_events($last_id)}), 'conteggio persistito nel log';
+    }
+    $admin->do('DELETE FROM battute WHERE flay_id IN (900, 901)');
+    $admin->do('DELETE FROM flay WHERE row_id IN (900, 901)');
+    $repo->invalidate_validation_days($target, ['valida_battute'], ['2026-12-15']);
+};
+
 subtest '04 preflight: nessuna scrittura o invalidazione se stima assente o eccessiva' => sub {
     my $before_tracks = $admin->selectall_arrayref('SELECT * FROM flay ORDER BY row_id');
     my $before_hits = $admin->selectall_arrayref('SELECT * FROM battute ORDER BY row_id');

@@ -206,13 +206,13 @@ procedure eseguibili dell'applicazione.
   cicli annidati per la prima battuta, letture e UPDATE per traccia.
 - Rischi/errori: SQL interpolato, AutoCommit e nessun rollback, letture senza
   ORDER BY, `$prima_batt` globale non azzerata per traccia; operazioni non A/D
-  riusano la query precedente; ciclo `for ($n=0, $n<=..., $n++)` malformato;
+  riusano la precedente query delle battute della stessa traccia; ciclo `for ($n=0, $n<=..., $n++)` malformato;
   prepare finale usa `$up_data_ora_arr` invece di `$up_data_ora_arr_str`.
   Errori DB provocano `die`; apertura report non controllata; nessun codice
   d'uscita esplicito, successo implicito se arriva in fondo.
 - Decisioni di migrazione approvate: originale intatto; ordine row_id nelle
   letture prive di ordinamento; senza prima battuta valida tutte le candidate
-  diventano N e la traccia D; operazioni diverse da A/D bloccate prima di scrivere.
+  diventano N e la traccia D; operazioni non riconosciute bloccate prima di scrivere.
   La prima battuta e locale alla traccia; valori numerici mancanti/non finiti
   e quote negative provocano errore, evitando coercizioni e distanze obsolete.
   Il prepare inutilizzato errato e eliminato; l'aggregazione delle date usa
@@ -223,6 +223,8 @@ procedure eseguibili dell'applicazione.
 - Modulo di destinazione: `ScriptManager::Command::ValidaBattute`.
 - Integrazione: `valida_battute`, asincrono/esclusivo, parametro `database`,
   intervallo/sovrascrittura comuni a 03-08, credenziali server.
+  Le tracce con operazione `N` sono escluse da analisi e azzeramenti, con
+  conteggio nel log; altri valori diversi da A/D restano bloccanti.
   Completamento date e riepilogo sono limitati ai giorni selezionati non
   saltati, diversamente dal riepilogo globale legacy.
   Analisi 0-50%, salvataggio 50-99% (UPDATE delle battute

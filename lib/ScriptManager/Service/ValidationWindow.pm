@@ -96,7 +96,7 @@ sub prepare ($self) {
     return $self;
 }
 
-sub filter ($self, $alias = '') {
+sub filter ($self, $alias = '', $include_non_operations = 0) {
     die "Alias SQL non valido\n" unless $alias =~ /\A(?:f)?\z/;
     return (' AND 1 = 0') unless @{$self->days};
     my $prefix = length $alias ? "$alias." : '';
@@ -104,6 +104,9 @@ sub filter ($self, $alias = '') {
     my $sql = " AND (${prefix}validation_fl IS NULL OR ${prefix}validation_fl <> 'M')"
         . " AND DATE($prefix$date) IN (" . join(',', ('?') x @{$self->days}) . ')';
     my @bind = @{$self->days};
+    if ($self->stage == 4 && !$include_non_operations) {
+        $sql .= " AND (${prefix}flay_operation IS NULL OR BINARY ${prefix}flay_operation <> BINARY 'N')";
+    }
     if ($self->stage >= 5 && $self->stage <= 7) {
         $sql .= " AND ${prefix}flay_operation = ?";
         push @bind, $self->stage == 5 ? 'A' : 'D';

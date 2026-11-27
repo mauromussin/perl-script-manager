@@ -328,6 +328,11 @@ non e utilizzato e quindi non viene riproposto.
 Eseguire dopo `03-valida_tracce`: senza sovrascrittura seleziona solo tracce con `validation_fl='Y'`
 e `validation_bt IS NULL`. Classifica battute taxi (`T`), spezzate (`S`),
 non valide (`N`), valide (`Y`) o appartenenti a tracce insufficienti (`D`).
+Le tracce con `flay_operation='N'` sono escluse dall'analisi e dagli azzeramenti,
+anche con Sovrascrivi; il log riporta un avviso con il numero escluso.
+Altri valori diversi da `A`/`D` continuano a bloccare la richiesta.
+I giorni elaborati vengono comunque registrati come completati: se una traccia
+esclusa viene successivamente corretta, occorre rieseguire il giorno con Sovrascrivi.
 Aggiorna anche gli stati delle tracce (`D` sotto 4 valide, `L` da 4 a 7,
 `Y` da 8) e le date mancanti `data_ora_arr`: prima battuta valida per i
 decolli, ultima per gli atterraggi. Quest'ultimo passaggio include le tracce

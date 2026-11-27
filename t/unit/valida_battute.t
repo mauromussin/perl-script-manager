@@ -241,13 +241,14 @@ subtest 'esecuzione e progressione di tutte le fasi' => sub {
     local $ENV{MYSQL_PORT} = 3306;
     local $ENV{MYSQL_USER} = 'test';
     local $ENV{MYSQL_PASSWORD} = 'not-a-real-password';
-    for my $mode ('normal', 'empty', 'batch', 'flags', 'dates', 'report', 'disconnect', 'cancel', 'operation') {
+    for my $mode ('normal', 'empty', 'batch', 'excluded', 'flags', 'dates', 'report', 'disconnect', 'cancel', 'operation') {
         subtest $mode => sub {
             my $ctx = BattuteContext->new;
             my $db = BattuteDatabase->new(ctx => $ctx, fail => $mode);
             $db->tracks([]) if $mode eq 'empty';
             $db->hits->{1} = line_hits(501) if $mode eq 'batch';
-            $db->tracks([[1, 'D'], [2, 'N']]) if $mode eq 'operation';
+            $db->tracks([[1, 'D'], [2, 'A'], [3, 'N'], [4, 'N']]) if $mode eq 'excluded';
+            $db->tracks([[1, 'D'], [2, 'X']]) if $mode eq 'operation';
             my $command = ScriptManager::Command::ValidaBattute->new(
                 preflight => AlgorithmOnlyPreflight->new, window_class => 'TestValidationWindow', connect_db => sub (@args) {
                 like $args[0], qr/database=radar_test;host=localhost;port=3306/, 'connessione richiesta';
@@ -258,9 +259,13 @@ subtest 'esecuzione e progressione di tutte le fasi' => sub {
             my $error = $@;
             my @percent = map { $_->[0] } @{$ctx->steps};
             ok !grep({ $percent[$_] < $percent[$_ - 1] } 1 .. $#percent), 'avanzamento monotono';
-            if ($mode eq 'normal' || $mode eq 'empty' || $mode eq 'batch') {
+            if ($mode eq 'normal' || $mode eq 'empty' || $mode eq 'batch' || $mode eq 'excluded') {
                 ok $result->{success}, 'completato';
                 is $result->{data}{tracks}, $mode eq 'empty' ? 0 : 2;
+                if ($mode eq 'excluded') {
+                    ok scalar(grep { $_->[0] eq 'warning' && $_->[1] =~ /2 tracce con operazione N escluse/ } @{$ctx->events}),
+                        'numero delle tracce escluse nel log';
+                }
                 is $percent[-1], 100, '100 solo a conclusione';
                 ok $db->disconnected, 'connessione chiusa';
                 my @dates = grep { $_->[0] =~ /data_ora_arr/ } @{$db->writes};

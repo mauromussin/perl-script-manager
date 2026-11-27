@@ -168,15 +168,23 @@ sub run ($self, $ctx, $params) {
     $saved = 0;
     my $ok = eval {
         $window = $self->window_class->new(db => $db, ctx => $ctx, params => $params, stage => 4)->prepare;
-        my ($filter, @scope_bind) = $window->filter;
+        my ($filter, @scope_bind) = $window->filter('', 1);
         my $selection = ($window->overwrite ? q{validation_fl IN ('Y','L','D','P')}
             : 'validation_bt IS NULL AND validation_fl = ?') . $filter;
         my @selection_bind = (($window->overwrite ? () : ('Y')), @scope_bind);
         my $tracks = $db->selectall_arrayref(
             "SELECT row_id, flay_operation FROM flay WHERE $selection ORDER BY row_id", undef, @selection_bind);
+        my $excluded = grep { defined $_->[1] && $_->[1] eq 'N' } @$tracks;
+        $ctx->log(warning => "$excluded tracce con operazione N escluse dalla validazione e dalla sovrascrittura")
+            if $excluded;
+        $tracks = [grep { !defined $_->[1] || $_->[1] ne 'N' } @$tracks];
         ScriptManager::Exception->throw('invalid_operation',
             'Sono presenti tracce da validare con operazione diversa da A/D; nessuna modifica eseguita')
             if grep { !defined $_->[1] || $_->[1] !~ /\A[AD]\z/ } @$tracks;
+        ($filter, @scope_bind) = $window->filter;
+        $selection = ($window->overwrite ? q{validation_fl IN ('Y','L','D','P')}
+            : 'validation_bt IS NULL AND validation_fl = ?') . $filter;
+        @selection_bind = (($window->overwrite ? () : ('Y')), @scope_bind);
         $ctx->log(info => scalar(@$tracks) . ' tracce da analizzare; salvataggio in AutoCommit, senza rollback');
         $self->preflight->check($db, $ctx, $window, $tracks, $selection, \@selection_bind,
             sub ($track) { $self->plan_track($db, $ctx, $window, $track) });

@@ -105,6 +105,11 @@ subtest 'skip giornaliero, filtro e invalidazione delle sole dipendenze' => sub 
             my ($sql, @bind) = $scope->filter('f');
             like $sql, $stage == 7 || $stage == 10 ? qr/DATE\(f.data_ora_arr\) IN \(/ : qr/DATE\(f.data_ora_italy\) IN \(/,
                 'campo data coerente con la fase';
+            if ($stage == 4) {
+                like $sql, qr/BINARY f\.flay_operation <> BINARY 'N'/, 'reset e report escludono le tracce N';
+                my ($inclusive) = $scope->filter('', 1);
+                unlike $inclusive, qr/BINARY flay_operation/, 'selezione iniziale include N per contarle';
+            }
             is $bind[0], $overwrite ? '2026-11-01' : '2026-11-02', 'date tramite placeholder';
             ok !grep({ $_->[0] =~ /^(UPDATE|DELETE)/ } @{$db->queries}), 'prepare non modifica dati';
             $scope->start_saving;
